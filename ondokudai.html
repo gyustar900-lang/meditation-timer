@@ -525,6 +525,16 @@
       <select id="voiceSelect"><option>音声を読み込み中…</option></select>
     </div>
 
+    <div class="field">
+      <label class="field-label" for="endSoundSelect">終了音</label>
+      <select id="endSoundSelect">
+        <option value="none">なし</option>
+        <option value="beep">電子音</option>
+        <option value="bell">鐘</option>
+        <option value="soft-bell" selected>柔らかいベル</option>
+      </select>
+    </div>
+
     <div class="field rate-field">
       <label class="field-label" for="rateInput">速さ</label>
       <div class="rate-track-row">
@@ -595,6 +605,7 @@
   var playIcon = document.getElementById('playIcon');
   var stopBtn = document.getElementById('stopBtn');
   var voiceSelect = document.getElementById('voiceSelect');
+  var endSoundSelect = document.getElementById('endSoundSelect');
   var rateInput = document.getElementById('rateInput');
   var rateValue = document.getElementById('rateValue');
   var pitchInput = document.getElementById('pitchInput');
@@ -893,7 +904,8 @@
         voiceName: voiceSelect.value,
         rate: rateInput.value,
         pitch: pitchInput.value,
-        volume: volumeInput.value
+        volume: volumeInput.value,
+        endSound: endSoundSelect.value
       }));
     } catch (e) {}
   }
@@ -918,7 +930,11 @@
       volumeInput.value = saved.volume;
       volumeValue.textContent = Math.round(parseFloat(saved.volume) * 100) + '%';
     }
+    if (saved.endSound) {
+      endSoundSelect.value = saved.endSound;
+    }
   })();
+  endSoundSelect.addEventListener('change', saveSettings);
   (function restorePresetSelection() {
     try {
       var key = localStorage.getItem('ondokudai:preset');
@@ -993,6 +1009,36 @@
   } else {
     vuCtx.fillStyle = '#C98A2E';
     vuCtx.fillRect(0, 20, 64, 6);
+  }
+
+  // ==== 終了音 ====
+  // 原稿を最後まで読み終えたときだけ鳴らす。音声ファイルは使わず、瞑想タイマーと同じ
+  // Web Audio API でその場合成する。睡眠モードでは、選択に関わらず必ず無音にする。
+  var END_SOUND_PRESETS = {
+    beep:        { freq: 660, duration: 1.0, peak: 0.9 },
+    bell:        { freq: 220, duration: 2.4, peak: 0.7 },
+    'soft-bell': { freq: 880, duration: 1.6, peak: 0.4 }
+  };
+
+  function playEndSound() {
+    if (activePresetKey === 'sleep') return; // 睡眠モードの終了音は完全に切る（STEP10）
+    var type = endSoundSelect.value;
+    var settings = END_SOUND_PRESETS[type];
+    if (!settings) return; // 'none' など未定義の場合は何もしない
+
+    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    var ctx = new AudioContextClass();
+    var oscillator = ctx.createOscillator();
+    var gain = ctx.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = settings.freq;
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start();
+    gain.gain.setValueAtTime(settings.peak, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + settings.duration);
+    oscillator.stop(ctx.currentTime + settings.duration);
   }
 
   // ==== 再生エンジン ====
@@ -1101,7 +1147,9 @@
     clearPauseTimer();
     exitSleepOverlay();
     isPaused = false;
-    playState = reason === 'finished' ? 'finished' : 'idle';
+    var finished = reason === 'finished';
+    playState = finished ? 'finished' : 'idle';
+    if (finished) playEndSound();
     setPlayingUI(false);
     Object.keys(sentenceSpans).forEach(function (key) {
       sentenceSpans[key].classList.remove('is-current');
