@@ -126,6 +126,115 @@
     border-color:var(--accent);
     color:var(--accent-ink);
   }
+  .dim-toggle-field{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    margin-left:auto;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    color:var(--ink-soft);
+    cursor:pointer;
+  }
+  .dim-toggle-field input{ accent-color:var(--accent); cursor:pointer; }
+
+  /* ---------- sleep overlay (睡眠モードの暗転画面) ---------- */
+  /* テーマ(ライト/ダーク)に関わらず常にほぼ黒にするため、ページのトークンとは別の固定色を使う */
+  .sleep-overlay{
+    position:fixed;
+    inset:0;
+    z-index:100;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+    padding:24px;
+    text-align:center;
+    background:#05070A;
+    color:#D8DEE4;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity 1.4s ease;
+  }
+  .sleep-overlay.is-active{
+    opacity:1;
+    pointer-events:auto;
+  }
+  .sleep-breath{
+    width:64px; height:64px;
+    border-radius:50%;
+    background:radial-gradient(circle, rgba(211,162,99,.55), rgba(211,162,99,0) 70%);
+    animation:sleep-breathe 6s ease-in-out infinite;
+  }
+  @keyframes sleep-breathe{
+    0%, 100%{ transform:scale(.85); opacity:.55; }
+    50%{ transform:scale(1.15); opacity:1; }
+  }
+  .sleep-label{
+    margin:0;
+    font-family:"Shippori Mincho",serif;
+    font-size:15px;
+    letter-spacing:.08em;
+    color:#B9C0C7;
+  }
+  .sleep-hint{
+    margin:0;
+    font-family:"JetBrains Mono",monospace;
+    font-size:10.5px;
+    letter-spacing:.06em;
+    color:#5C646C;
+    opacity:0;
+    transition:opacity .6s ease .6s;
+  }
+  .sleep-overlay.is-active .sleep-hint{ opacity:1; }
+  .sleep-overlay.is-controls-visible .sleep-hint{ opacity:0; transition-delay:0s; }
+
+  .sleep-controls{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:14px;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .4s ease;
+  }
+  .sleep-overlay.is-controls-visible .sleep-controls{
+    opacity:1;
+    pointer-events:auto;
+  }
+  .sleep-controls-row{ display:flex; gap:12px; }
+  button.sleep-btn{
+    background:transparent;
+    border:1px solid #33393F;
+    color:#D8DEE4;
+    border-radius:999px;
+    padding:9px 20px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:13px;
+    cursor:pointer;
+  }
+  button.sleep-btn:hover{ border-color:#5C646C; }
+  button.sleep-btn.danger{ color:#D99A83; border-color:#4A2E24; }
+  .sleep-volume-label{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    color:#8A9198;
+  }
+  .sleep-end-confirm{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+    font-size:13px;
+    color:#D8DEE4;
+  }
+  .sleep-end-confirm-row{ display:flex; gap:10px; }
+
+  @media (prefers-reduced-motion: reduce){
+    .sleep-breath{ animation:none; }
+    .sleep-overlay, .sleep-hint, .sleep-controls{ transition:none; }
+  }
 
   /* ---------- manuscript card ---------- */
   .manuscript{
@@ -377,6 +486,10 @@
     <button type="button" class="preset-btn" data-preset="lecture">講座</button>
     <button type="button" class="preset-btn" data-preset="wish">願望実現</button>
     <button type="button" class="preset-btn" data-preset="sleep">睡眠</button>
+    <label class="dim-toggle-field" for="dimToggle">
+      <input type="checkbox" id="dimToggle" checked>
+      睡眠モードで画面を暗くする
+    </label>
   </div>
 
   <div class="manuscript">
@@ -446,6 +559,31 @@
   </div>
 </div>
 
+<!--
+  睡眠モードの暗転オーバーレイ。
+  「睡眠」プリセットで再生を始めてしばらく経つと、これが画面全面に表示される。
+  誤操作防止のため、終了ボタンは1回押しただけでは終了せず、確認行を出してから「はい」を押す必要がある。
+-->
+<div id="sleepOverlay" class="sleep-overlay">
+  <div class="sleep-breath" aria-hidden="true"></div>
+  <p class="sleep-label">眠りのための読み上げ</p>
+  <p class="sleep-hint">画面をタップすると操作が出ます</p>
+  <div id="sleepControls" class="sleep-controls">
+    <div class="sleep-controls-row">
+      <button type="button" class="sleep-btn" id="sleepPlayPauseBtn">一時停止</button>
+      <button type="button" class="sleep-btn danger" id="sleepEndBtn">終了</button>
+    </div>
+    <span class="sleep-volume-label" id="sleepVolumeLabel">音量 40%</span>
+    <div id="sleepEndConfirmRow" class="sleep-end-confirm" hidden>
+      <span>終了しますか？</span>
+      <div class="sleep-end-confirm-row">
+        <button type="button" class="sleep-btn danger" id="sleepEndYes">はい、終了する</button>
+        <button type="button" class="sleep-btn" id="sleepEndNo">いいえ</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ==== 動作ロジック（JavaScript） ==== -->
 <script>
 (function(){
@@ -467,6 +605,14 @@
   var vuCanvas = document.getElementById('vuCanvas');
   var vuCtx = vuCanvas.getContext('2d');
   var unsupportedNotice = document.getElementById('unsupportedNotice');
+  var dimToggle = document.getElementById('dimToggle');
+  var sleepOverlay = document.getElementById('sleepOverlay');
+  var sleepPlayPauseBtn = document.getElementById('sleepPlayPauseBtn');
+  var sleepEndBtn = document.getElementById('sleepEndBtn');
+  var sleepVolumeLabel = document.getElementById('sleepVolumeLabel');
+  var sleepEndConfirmRow = document.getElementById('sleepEndConfirmRow');
+  var sleepEndYes = document.getElementById('sleepEndYes');
+  var sleepEndNo = document.getElementById('sleepEndNo');
 
   var ICON_PLAY = '<path d="M6 4L16 10L6 16V4Z" fill="currentColor"/>';
   var ICON_PAUSE = '<rect x="4" y="3" width="4" height="14" rx="1" fill="currentColor"/><rect x="12" y="3" width="4" height="14" rx="1" fill="currentColor"/>';
@@ -569,8 +715,10 @@
     sleep:   { rate: 0.70, pitch: 0.90, volume: 0.4 }  // 睡眠
   };
   var presetButtons = document.querySelectorAll('.preset-btn');
+  var activePresetKey = null; // 現在選ばれているプリセット。睡眠モード判定に使う
 
   function setSelectedPreset(key) {
+    activePresetKey = key || null;
     presetButtons.forEach(function (btn) {
       btn.classList.toggle('is-selected', btn.dataset.preset === key);
     });
@@ -601,6 +749,93 @@
   // （プリセット由来の値からずれるため、選択中の見た目のままにしない）
   [rateInput, pitchInput, volumeInput].forEach(function (input) {
     input.addEventListener('input', function () { setSelectedPreset(null); });
+  });
+
+  // ==== 睡眠モード（画面暗転・誤操作防止） ====
+  // 「睡眠」プリセットで再生を始めてから既定の秒数が経つと、画面をほぼ黒に暗転させる。
+  // 暗転中にタップすると一時的に最小限の操作（一時停止・終了・音量表示）だけが出て、
+  // 数秒操作がなければまた暗転する。誤って眠りを妨げないよう、終了は2段階確認にしてある。
+  var SLEEP_DIM_DELAY_MS = 15000;     // 暗転までの待ち時間（指示書の目安「10〜20秒」の中間）
+  var SLEEP_CONTROLS_HIDE_MS = 6000;  // 操作を表示したままにする時間
+  var sleepDimTimerId = null;
+  var sleepControlsHideTimerId = null;
+
+  function clearSleepTimers() {
+    if (sleepDimTimerId !== null) { clearTimeout(sleepDimTimerId); sleepDimTimerId = null; }
+    if (sleepControlsHideTimerId !== null) { clearTimeout(sleepControlsHideTimerId); sleepControlsHideTimerId = null; }
+  }
+
+  function scheduleSleepDim() {
+    clearSleepTimers();
+    if (activePresetKey !== 'sleep' || !dimToggle.checked) return;
+    sleepDimTimerId = setTimeout(function () {
+      if (isPlaying) enterSleepOverlay();
+    }, SLEEP_DIM_DELAY_MS);
+  }
+
+  function enterSleepOverlay() {
+    sleepOverlay.classList.add('is-active');
+    sleepOverlay.classList.remove('is-controls-visible');
+    sleepEndConfirmRow.hidden = true;
+  }
+
+  function exitSleepOverlay() {
+    clearSleepTimers();
+    sleepOverlay.classList.remove('is-active', 'is-controls-visible');
+    sleepEndConfirmRow.hidden = true;
+  }
+
+  function updateSleepControlsUI() {
+    sleepPlayPauseBtn.textContent = isPaused ? '再開' : '一時停止';
+    sleepVolumeLabel.textContent = '音量 ' + Math.round(parseFloat(volumeInput.value) * 100) + '%';
+  }
+
+  function showSleepControls() {
+    if (!sleepOverlay.classList.contains('is-active')) return;
+    sleepOverlay.classList.add('is-controls-visible');
+    updateSleepControlsUI();
+    if (sleepControlsHideTimerId !== null) clearTimeout(sleepControlsHideTimerId);
+    sleepControlsHideTimerId = setTimeout(function () {
+      sleepOverlay.classList.remove('is-controls-visible');
+      sleepEndConfirmRow.hidden = true;
+    }, SLEEP_CONTROLS_HIDE_MS);
+  }
+
+  sleepOverlay.addEventListener('click', function () {
+    showSleepControls();
+  });
+
+  sleepPlayPauseBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    togglePauseResume();
+    showSleepControls();
+  });
+
+  sleepEndBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    sleepEndConfirmRow.hidden = false;
+    showSleepControls();
+  });
+
+  sleepEndYes.addEventListener('click', function (e) {
+    e.stopPropagation();
+    stopPlayback('idle');
+  });
+
+  sleepEndNo.addEventListener('click', function (e) {
+    e.stopPropagation();
+    sleepEndConfirmRow.hidden = true;
+    showSleepControls();
+  });
+
+  (function restoreDimToggle() {
+    try {
+      var v = localStorage.getItem('ondokudai:dimEnabled');
+      dimToggle.checked = v === null ? true : v === '1';
+    } catch (e) { dimToggle.checked = true; }
+  })();
+  dimToggle.addEventListener('change', function () {
+    try { localStorage.setItem('ondokudai:dimEnabled', dimToggle.checked ? '1' : '0'); } catch (e) {}
   });
 
   // ---------- voices ----------
@@ -826,9 +1061,11 @@
     buildReadingView();
     window.speechSynthesis.cancel();
     clearPauseTimer();
+    exitSleepOverlay();
     isPaused = false;
     setPlayingUI(true);
     runCommand(0);
+    scheduleSleepDim();
   }
 
   function togglePauseResume() {
@@ -862,6 +1099,7 @@
   function stopPlayback(reason) {
     window.speechSynthesis.cancel();
     clearPauseTimer();
+    exitSleepOverlay();
     isPaused = false;
     playState = reason === 'finished' ? 'finished' : 'idle';
     setPlayingUI(false);
