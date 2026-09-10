@@ -245,6 +245,26 @@
   button.btn-outline:hover{ border-color:var(--accent); }
   button.btn-outline.danger{ color:var(--accent); border-color:var(--accent); }
 
+  /* ---------- script save/load (原稿の保存・呼び出し) ---------- */
+  .script-field-grow{ flex:1 1 220px; }
+  input.script-title-input{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 10px;
+    font-size:13.5px;
+    color:var(--ink);
+    width:100%;
+  }
+  .script-btn-row{ display:flex; gap:8px; }
+  .script-status{
+    margin:-14px 0 0;
+    min-height:1.4em;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11.5px;
+    color:var(--ink-soft);
+  }
+
   /* ---------- sleep overlay (睡眠モードの暗転画面) ---------- */
   /* テーマ(ライト/ダーク)に関わらず常にほぼ黒にするため、ページのトークンとは別の固定色を使う */
   .sleep-overlay{
@@ -618,6 +638,46 @@
       <span id="estTime">推定 0:00</span>
     </div>
   </div>
+
+  <div class="dock script-dock">
+    <div class="field script-field-grow">
+      <label class="field-label" for="scriptTitleInput">タイトル</label>
+      <input type="text" id="scriptTitleInput" class="script-title-input" placeholder="例：眠りに落ちる周天法">
+    </div>
+    <div class="field">
+      <label class="field-label" for="scriptCategorySelect">カテゴリ</label>
+      <select id="scriptCategorySelect">
+        <option value="睡眠誘導">睡眠誘導</option>
+        <option value="仙道瞑想">仙道瞑想</option>
+        <option value="願望実現">願望実現</option>
+        <option value="周天法講座">周天法講座</option>
+        <option value="講義練習">講義練習</option>
+        <option value="自作" selected>自作</option>
+      </select>
+    </div>
+    <div class="field">
+      <span class="field-label">&nbsp;</span>
+      <div class="script-btn-row">
+        <button type="button" class="btn-outline" id="scriptNewBtn">新規</button>
+        <button type="button" class="play-btn-wide" id="scriptSaveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dock script-dock">
+    <div class="field script-field-grow">
+      <label class="field-label" for="savedScriptSelect">保存した原稿</label>
+      <select id="savedScriptSelect"><option value="">（まだ保存された原稿はありません）</option></select>
+    </div>
+    <div class="field">
+      <span class="field-label">&nbsp;</span>
+      <div class="script-btn-row">
+        <button type="button" class="btn-outline" id="scriptLoadBtn">呼び出す</button>
+        <button type="button" class="btn-outline danger" id="scriptDeleteBtn">削除</button>
+      </div>
+    </div>
+  </div>
+  <p class="script-status" id="scriptStatus" aria-live="polite"></p>
 
   <div id="unsupportedNotice" class="notice">
     お使いのブラウザは音声読み上げ（Web Speech API）に対応していないようです。最新の Chrome・Edge・Safari でお試しください。
@@ -1338,6 +1398,157 @@
   window.addEventListener('beforeunload', function () {
     if (supported) window.speechSynthesis.cancel();
   });
+
+  // ==== 原稿の保存・呼び出し ====
+  // localStorageに複数の原稿をタイトル・カテゴリ付きで保存する。
+  // 一覧をカテゴリごとに整理した専用画面はSTEP13で作る予定なので、
+  // ここではセレクトボックスからの保存/呼び出し/削除だけを最小限用意する。
+  var scriptTitleInput = document.getElementById('scriptTitleInput');
+  var scriptCategorySelect = document.getElementById('scriptCategorySelect');
+  var scriptNewBtn = document.getElementById('scriptNewBtn');
+  var scriptSaveBtn = document.getElementById('scriptSaveBtn');
+  var savedScriptSelect = document.getElementById('savedScriptSelect');
+  var scriptLoadBtn = document.getElementById('scriptLoadBtn');
+  var scriptDeleteBtn = document.getElementById('scriptDeleteBtn');
+  var scriptStatus = document.getElementById('scriptStatus');
+
+  var SCRIPT_CATEGORY_ORDER = ['睡眠誘導', '仙道瞑想', '願望実現', '周天法講座', '講義練習', '自作'];
+  var currentScriptId = null; // 呼び出し中/保存済みの原稿ID（次の「保存」で上書きするか新規にするかの判定に使う）
+
+  function genScriptId() {
+    return 'scr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function loadScripts() {
+    try {
+      var raw = localStorage.getItem('ondokudai:scripts');
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveScripts(list) {
+    try { localStorage.setItem('ondokudai:scripts', JSON.stringify(list)); } catch (e) {}
+  }
+
+  function setScriptStatus(text) {
+    scriptStatus.textContent = text;
+  }
+
+  function refreshSavedScriptSelect() {
+    var list = loadScripts();
+    savedScriptSelect.innerHTML = '';
+    if (!list.length) {
+      var emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '（まだ保存された原稿はありません）';
+      savedScriptSelect.appendChild(emptyOpt);
+      return;
+    }
+    SCRIPT_CATEGORY_ORDER.forEach(function (cat) {
+      var itemsInCat = list.filter(function (s) { return s.category === cat; });
+      if (!itemsInCat.length) return;
+      var group = document.createElement('optgroup');
+      group.label = cat;
+      itemsInCat.forEach(function (s) {
+        var opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.title;
+        group.appendChild(opt);
+      });
+      savedScriptSelect.appendChild(group);
+    });
+    if (currentScriptId) savedScriptSelect.value = currentScriptId;
+  }
+
+  scriptNewBtn.addEventListener('click', function () {
+    currentScriptId = null;
+    scriptTitleInput.value = '';
+    setScriptStatus('新しい原稿として保存できます。');
+  });
+
+  scriptSaveBtn.addEventListener('click', function () {
+    var title = scriptTitleInput.value.trim();
+    if (!title) {
+      setScriptStatus('タイトルを入力してください。');
+      return;
+    }
+    var list = loadScripts();
+    var now = new Date().toISOString();
+    var record = {
+      id: currentScriptId || genScriptId(),
+      title: title,
+      text: textInput.value,
+      category: scriptCategorySelect.value,
+      mode: activePresetKey,
+      rate: parseFloat(rateInput.value),
+      voiceName: voiceSelect.value,
+      pitch: parseFloat(pitchInput.value),
+      volume: parseFloat(volumeInput.value),
+      lastPosition: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    var existingIndex = list.findIndex(function (s) { return s.id === record.id; });
+    if (existingIndex !== -1) {
+      record.createdAt = list[existingIndex].createdAt;       // 作成日時は保持
+      record.lastPosition = list[existingIndex].lastPosition || 0; // 再生位置も保持（STEP14で本格利用）
+      list[existingIndex] = record;
+    } else {
+      list.push(record);
+    }
+    saveScripts(list);
+    currentScriptId = record.id;
+    refreshSavedScriptSelect();
+    setScriptStatus('「' + title + '」を保存しました。');
+  });
+
+  scriptLoadBtn.addEventListener('click', function () {
+    var id = savedScriptSelect.value;
+    if (!id) return;
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === id; });
+    if (!record) return;
+
+    textInput.value = record.text;
+    updateMeta();
+
+    rateInput.value = record.rate;
+    rateValue.textContent = parseFloat(record.rate).toFixed(1) + '×';
+    pitchInput.value = record.pitch;
+    pitchValue.textContent = parseFloat(record.pitch).toFixed(2);
+    volumeInput.value = record.volume;
+    volumeValue.textContent = Math.round(parseFloat(record.volume) * 100) + '%';
+    if (record.voiceName && voices.some(function (v) { return v.name === record.voiceName; })) {
+      voiceSelect.value = record.voiceName;
+    }
+    setSelectedPreset(record.mode || null);
+
+    scriptTitleInput.value = record.title;
+    scriptCategorySelect.value = record.category;
+    currentScriptId = record.id;
+
+    saveSettings();
+    setScriptStatus('「' + record.title + '」を呼び出しました。');
+  });
+
+  scriptDeleteBtn.addEventListener('click', function () {
+    var id = savedScriptSelect.value;
+    if (!id) return;
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === id; });
+    if (!record) return;
+    if (!window.confirm('「' + record.title + '」を削除しますか？この操作は取り消せません。')) return;
+    list = list.filter(function (s) { return s.id !== id; });
+    saveScripts(list);
+    if (currentScriptId === id) {
+      currentScriptId = null;
+      scriptTitleInput.value = '';
+    }
+    refreshSavedScriptSelect();
+    setScriptStatus('削除しました。');
+  });
+
+  refreshSavedScriptSelect();
 
   // ==== タブ切り替え（誘導瞑想 / タイマー瞑想） ====
   var guidedSection = document.getElementById('guidedSection');
