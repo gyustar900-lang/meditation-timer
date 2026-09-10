@@ -1351,10 +1351,12 @@
   // commands[idx] を実行する。speakなら読み上げ、pauseなら指定秒数だけ待ってから次へ進む。
   function runCommand(idx) {
     if (idx >= commands.length) {
+      persistPlaybackPosition(0); // 最後まで読み終えたので、次回は最初からにする
       stopPlayback('finished');
       return;
     }
     cmdIndex = idx;
+    persistPlaybackPosition(idx); // 保存済み原稿なら、今どこまで進んだかを都度書き出す
     var cmd = commands[idx];
 
     if (cmd.type === 'pause') {
@@ -1389,7 +1391,7 @@
     window.speechSynthesis.speak(utter);
   }
 
-  function startPlayback() {
+  function startPlayback(startIndex) {
     var text = textInput.value;
     commands = parseScript(text);
     if (!commands.length) return;
@@ -1399,7 +1401,7 @@
     exitSleepOverlay();
     isPaused = false;
     setPlayingUI(true);
-    runCommand(0);
+    runCommand(startIndex || 0);
     scheduleSleepDim();
   }
 
@@ -1445,10 +1447,22 @@
     });
   }
 
+  // 保存済み原稿に続きの位置があれば確認してから再生を始める。
+  // 通常の再生ボタンからも、原稿一覧の「再生」からも、この同じ入り口を使う。
+  function beginPlaybackWithResumeCheck() {
+    var startIndex = 0;
+    if (pendingResumeIndex > 0) {
+      var resume = window.confirm('前回の続きから再生しますか？\nOK：続きから　／　キャンセル：最初から');
+      if (resume) startIndex = pendingResumeIndex;
+      pendingResumeIndex = 0; // 一度聞いたら消す。次に閉じたときの位置はまた別途保存される
+    }
+    startPlayback(startIndex);
+  }
+
   playBtn.addEventListener('click', function () {
     if (!supported) return;
     if (!isPlaying) {
-      startPlayback();
+      beginPlaybackWithResumeCheck();
     } else {
       togglePauseResume();
     }
@@ -1477,7 +1491,8 @@
   var scriptStatus = document.getElementById('scriptStatus');
 
   var SCRIPT_CATEGORY_ORDER = ['睡眠誘導', '仙道瞑想', '願望実現', '周天法講座', '講義練習', '自作'];
-  var currentScriptId = null; // 呼び出し中/保存済みの原稿ID（次の「保存」で上書きするか新規にするかの判定に使う）
+  var currentScriptId = null;  // 呼び出し中/保存済みの原稿ID（次の「保存」で上書きするか新規にするかの判定に使う）
+  var pendingResumeIndex = 0;  // 原稿を読み込んだ直後、次に再生ボタンを押したときに続きから始めるかどうかの判定に使う
 
   function genScriptId() {
     return 'scr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -1526,6 +1541,7 @@
 
   scriptNewBtn.addEventListener('click', function () {
     currentScriptId = null;
+    pendingResumeIndex = 0;
     scriptTitleInput.value = '';
     setScriptStatus('新しい原稿として保存できます。');
   });
@@ -1586,8 +1602,21 @@
     scriptTitleInput.value = record.title;
     scriptCategorySelect.value = record.category;
     currentScriptId = record.id;
+    pendingResumeIndex = record.lastPosition || 0; // 続きから再生できるように、保存済みの位置を覚えておく
 
     saveSettings();
+  }
+
+  // 再生中、今どこまで進んだか（commandsのindex）を保存済み原稿に都度書き出す。
+  // 講座のように長い原稿を途中で閉じても、次回同じ場所から再生できるようにするため（STEP14）。
+  function persistPlaybackPosition(idx) {
+    if (!currentScriptId) return;
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === currentScriptId; });
+    if (!record) return;
+    record.lastPosition = idx;
+    record.updatedAt = new Date().toISOString();
+    saveScripts(list);
   }
 
   // 確認ダイアログ込みの削除本体。「保存した原稿」パネルからも原稿一覧からも使う。
@@ -1667,7 +1696,8 @@
         titleEl.textContent = record.title;
         var metaEl = document.createElement('div');
         metaEl.className = 'script-list-meta';
-        metaEl.textContent = estimateScriptDuration(record.text, record.rate);
+        metaEl.textContent = estimateScriptDuration(record.text, record.rate) +
+          (record.lastPosition > 0 ? '　・続きあり' : '');
         info.appendChild(titleEl);
         info.appendChild(metaEl);
 
@@ -1725,7 +1755,7 @@
     applyScriptRecord(record);
     refreshSavedScriptSelect();
     switchTab('guided');
-    startPlayback();
+    beginPlaybackWithResumeCheck();
   }
 
   function copyScriptFromList(id) {
