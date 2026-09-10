@@ -138,6 +138,113 @@
   }
   .dim-toggle-field input{ accent-color:var(--accent); cursor:pointer; }
 
+  /* ---------- tabs (誘導瞑想 / タイマー瞑想) ---------- */
+  .tab-dock{
+    display:flex;
+    gap:10px;
+  }
+  button.tab-btn{
+    flex:1;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:12px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:14px;
+    font-weight:700;
+    color:var(--ink-soft);
+    cursor:pointer;
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease;
+  }
+  button.tab-btn:hover{ border-color:var(--accent); }
+  button.tab-btn.is-selected{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+
+  /* ---------- timer (タイマー瞑想) ---------- */
+  .timer-panel{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    box-shadow:var(--shadow);
+    padding:32px 28px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:16px;
+    text-align:center;
+  }
+  .timer-instruction{ margin:0; color:var(--ink-soft); font-size:14px; }
+  .timer-minute-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(72px, 1fr));
+    gap:8px;
+    width:100%;
+  }
+  button.timer-minute-btn.is-selected{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+  .timer-custom-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex-wrap:wrap;
+    justify-content:center;
+  }
+  .timer-custom-row input[type="number"]{
+    width:100px;
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 10px;
+    font-size:13.5px;
+    color:var(--ink);
+  }
+  button.play-btn-wide{
+    background:var(--accent);
+    color:var(--accent-ink);
+    border:1px solid var(--accent);
+    border-radius:999px;
+    padding:12px 30px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:14px;
+    font-weight:700;
+    cursor:pointer;
+    transition:filter .15s ease;
+  }
+  button.play-btn-wide:hover{ filter:brightness(1.06); }
+  button.play-btn-wide:disabled{ opacity:.4; cursor:not-allowed; }
+  .timer-display{
+    font-family:"JetBrains Mono",monospace;
+    font-size:52px;
+    font-variant-numeric:tabular-nums;
+    color:var(--ink);
+    letter-spacing:.02em;
+  }
+  .timer-controls-row{
+    display:flex;
+    gap:12px;
+    flex-wrap:wrap;
+    justify-content:center;
+  }
+  button.btn-outline{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:10px 22px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:13.5px;
+    color:var(--ink);
+    cursor:pointer;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  button.btn-outline:hover{ border-color:var(--accent); }
+  button.btn-outline.danger{ color:var(--accent); border-color:var(--accent); }
+
   /* ---------- sleep overlay (睡眠モードの暗転画面) ---------- */
   /* テーマ(ライト/ダーク)に関わらず常にほぼ黒にするため、ページのトークンとは別の固定色を使う */
   .sleep-overlay{
@@ -480,6 +587,12 @@
     <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>のように書くと、そこで指定した秒数だけ黙って待ってから続きを読み上げます。</p>
   </header>
 
+  <div class="tab-dock" role="tablist" aria-label="モード切り替え">
+    <button type="button" class="tab-btn is-selected" data-tab="guided" role="tab" aria-selected="true">誘導瞑想</button>
+    <button type="button" class="tab-btn" data-tab="timer" role="tab" aria-selected="false">タイマー瞑想</button>
+  </div>
+
+  <div id="guidedSection">
   <div class="preset-dock" role="group" aria-label="読み上げモードのプリセット">
     <span class="field-label preset-dock-label">モード</span>
     <button type="button" class="preset-btn" data-preset="normal">通常音読</button>
@@ -565,6 +678,55 @@
     <div class="vu">
       <canvas class="vu-canvas" id="vuCanvas" width="64" height="26"></canvas>
       <span class="vu-status" id="vuStatus">待機中</span>
+    </div>
+  </div>
+  </div>
+  <!-- ==== guidedSection ここまで（誘導瞑想＝音読台） ==== -->
+
+  <!-- ==== timerSection（タイマー瞑想）====
+       既存の meditation_timer_single.html のロジックをこの単一ファイル内に統合したもの。
+       終了音は音読台と同じ endSoundSelect / playEndSound() を共用する。 -->
+  <div id="timerSection" hidden>
+    <div id="timerSelection" class="timer-panel">
+      <span class="manuscript-label">時間を選ぶ</span>
+      <p class="timer-instruction">瞑想する時間を選んでください</p>
+      <div class="timer-minute-grid">
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="3">3分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="5">5分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="7">7分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="10">10分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="15">15分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="20">20分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="30">30分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="45">45分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="60">60分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="90">90分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="120">120分</button>
+      </div>
+      <div class="timer-custom-row">
+        <label class="field-label" for="timerCustomMinutes">自由入力（分）</label>
+        <input type="number" id="timerCustomMinutes" min="1" max="600" step="1" placeholder="例：25">
+      </div>
+      <button type="button" class="play-btn-wide" id="timerStartBtn" disabled>開始</button>
+    </div>
+
+    <div id="timerRunning" class="timer-panel" hidden>
+      <div id="timerDisplay" class="timer-display">00:00</div>
+      <p class="timer-instruction">静かに呼吸を整えましょう</p>
+      <div class="timer-controls-row">
+        <button type="button" class="btn-outline" id="timerPauseBtn">一時停止</button>
+        <button type="button" class="btn-outline" id="timerResumeBtn" hidden>再開</button>
+        <button type="button" class="btn-outline danger" id="timerResetBtn">リセット</button>
+      </div>
+    </div>
+
+    <div id="timerFinished" class="timer-panel" hidden>
+      <p class="timer-instruction">終了しました</p>
+      <p class="timer-instruction">おつかれさまでした</p>
+      <div class="timer-controls-row">
+        <button type="button" class="play-btn-wide" id="timerAgainBtn">もう一度</button>
+        <button type="button" class="btn-outline" id="timerChooseBtn">時間を選び直す</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1020,8 +1182,11 @@
     'soft-bell': { freq: 880, duration: 1.6, peak: 0.4 }
   };
 
-  function playEndSound() {
-    if (activePresetKey === 'sleep') return; // 睡眠モードの終了音は完全に切る（STEP10）
+  // suppressForSleep: 誘導瞑想（音読台）側から呼ぶときだけtrueにする。
+  // 「睡眠プリセット中は終了音を完全に切る」のは誘導瞑想の話であり、
+  // タイマー瞑想はプリセットと無関係な別機能なのでこの抑制はかけない。
+  function playEndSound(suppressForSleep) {
+    if (suppressForSleep && activePresetKey === 'sleep') return; // 睡眠モードの終了音は完全に切る（STEP10）
     var type = endSoundSelect.value;
     var settings = END_SOUND_PRESETS[type];
     if (!settings) return; // 'none' など未定義の場合は何もしない
@@ -1149,7 +1314,7 @@
     isPaused = false;
     var finished = reason === 'finished';
     playState = finished ? 'finished' : 'idle';
-    if (finished) playEndSound();
+    if (finished) playEndSound(true);
     setPlayingUI(false);
     Object.keys(sentenceSpans).forEach(function (key) {
       sentenceSpans[key].classList.remove('is-current');
@@ -1172,6 +1337,163 @@
 
   window.addEventListener('beforeunload', function () {
     if (supported) window.speechSynthesis.cancel();
+  });
+
+  // ==== タブ切り替え（誘導瞑想 / タイマー瞑想） ====
+  var guidedSection = document.getElementById('guidedSection');
+  var timerSection = document.getElementById('timerSection');
+  var tabButtons = document.querySelectorAll('.tab-btn');
+
+  function switchTab(tab) {
+    if (tab === 'timer') {
+      if (isPlaying) stopPlayback('idle'); // 誘導瞑想の再生中にタイマーへ切り替えたら止める
+      guidedSection.hidden = true;
+      timerSection.hidden = false;
+    } else {
+      timerPause(); // タイマー動作中に誘導瞑想へ切り替えたら一時停止扱いにする
+      guidedSection.hidden = false;
+      timerSection.hidden = true;
+    }
+    tabButtons.forEach(function (btn) {
+      var selected = btn.dataset.tab === tab;
+      btn.classList.toggle('is-selected', selected);
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+  }
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () { switchTab(btn.dataset.tab); });
+  });
+
+  // ==== タイマー瞑想（meditation_timer_single.html をこのファイルに統合） ====
+  var timerSelection = document.getElementById('timerSelection');
+  var timerRunning = document.getElementById('timerRunning');
+  var timerFinished = document.getElementById('timerFinished');
+  var timerMinuteButtons = document.querySelectorAll('.timer-minute-btn');
+  var timerCustomMinutes = document.getElementById('timerCustomMinutes');
+  var timerStartBtn = document.getElementById('timerStartBtn');
+  var timerPauseBtn = document.getElementById('timerPauseBtn');
+  var timerResumeBtn = document.getElementById('timerResumeBtn');
+  var timerResetBtn = document.getElementById('timerResetBtn');
+  var timerAgainBtn = document.getElementById('timerAgainBtn');
+  var timerChooseBtn = document.getElementById('timerChooseBtn');
+  var timerDisplay = document.getElementById('timerDisplay');
+
+  var timerSelectedMinutes = null;
+  var timerIntervalId = null;
+  var timerRemainingSeconds = 0;
+
+  timerMinuteButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      timerSelectedMinutes = parseInt(btn.dataset.minutes, 10);
+      timerMinuteButtons.forEach(function (b) { b.classList.toggle('is-selected', b === btn); });
+      timerCustomMinutes.value = '';
+      timerStartBtn.disabled = false;
+    });
+  });
+
+  timerCustomMinutes.addEventListener('input', function () {
+    var v = parseInt(timerCustomMinutes.value, 10);
+    if (v > 0) {
+      timerSelectedMinutes = v;
+      timerMinuteButtons.forEach(function (btn) { btn.classList.remove('is-selected'); });
+      timerStartBtn.disabled = false;
+    } else {
+      timerSelectedMinutes = null;
+      timerStartBtn.disabled = true;
+    }
+  });
+
+  function timerUpdateDisplay() {
+    var hours = Math.floor(timerRemainingSeconds / 3600);
+    var minutes = Math.floor((timerRemainingSeconds % 3600) / 60);
+    var seconds = timerRemainingSeconds % 60;
+    var mm = String(minutes).padStart(2, '0');
+    var ss = String(seconds).padStart(2, '0');
+    timerDisplay.textContent = hours > 0 ? (hours + ':' + mm + ':' + ss) : (mm + ':' + ss);
+  }
+
+  function timerCountdownTick() {
+    timerRemainingSeconds--;
+    timerUpdateDisplay();
+    if (timerRemainingSeconds <= 0) {
+      clearInterval(timerIntervalId);
+      timerIntervalId = null;
+      timerFinishCountdown();
+    }
+  }
+
+  function timerStartCountdown() {
+    clearInterval(timerIntervalId);
+    timerIntervalId = setInterval(timerCountdownTick, 1000);
+  }
+
+  function timerFinishCountdown() {
+    playEndSound(false); // タイマー瞑想は誘導瞑想の「睡眠プリセット」とは無関係なので常に設定通り鳴らす
+    timerRunning.hidden = true;
+    timerFinished.hidden = false;
+  }
+
+  function timerPause() {
+    if (!timerIntervalId) return;
+    clearInterval(timerIntervalId);
+    timerIntervalId = null;
+    timerPauseBtn.hidden = true;
+    timerResumeBtn.hidden = false;
+  }
+
+  timerStartBtn.addEventListener('click', function () {
+    if (!timerSelectedMinutes) return;
+    timerRemainingSeconds = timerSelectedMinutes * 60;
+    timerSelection.hidden = true;
+    timerRunning.hidden = false;
+    timerPauseBtn.hidden = false;
+    timerResumeBtn.hidden = true;
+    timerUpdateDisplay();
+    timerStartCountdown();
+  });
+
+  timerPauseBtn.addEventListener('click', timerPause);
+
+  timerResumeBtn.addEventListener('click', function () {
+    timerStartCountdown();
+    timerResumeBtn.hidden = true;
+    timerPauseBtn.hidden = false;
+  });
+
+  timerResetBtn.addEventListener('click', function () {
+    clearInterval(timerIntervalId);
+    timerIntervalId = null;
+    timerRunning.hidden = true;
+    timerSelection.hidden = false;
+    timerMinuteButtons.forEach(function (btn) { btn.classList.remove('is-selected'); });
+    timerCustomMinutes.value = '';
+    timerSelectedMinutes = null;
+    timerStartBtn.disabled = true;
+    timerPauseBtn.hidden = false;
+    timerResumeBtn.hidden = true;
+  });
+
+  timerAgainBtn.addEventListener('click', function () {
+    timerFinished.hidden = true;
+    timerRunning.hidden = false;
+    timerRemainingSeconds = timerSelectedMinutes * 60;
+    timerUpdateDisplay();
+    timerPauseBtn.hidden = false;
+    timerResumeBtn.hidden = true;
+    timerStartCountdown();
+  });
+
+  timerChooseBtn.addEventListener('click', function () {
+    timerFinished.hidden = true;
+    timerSelection.hidden = false;
+    timerMinuteButtons.forEach(function (btn) { btn.classList.remove('is-selected'); });
+    timerCustomMinutes.value = '';
+    timerSelectedMinutes = null;
+    timerStartBtn.disabled = true;
+  });
+
+  window.addEventListener('beforeunload', function () {
+    clearInterval(timerIntervalId);
   });
 })();
 </script>
