@@ -1,0 +1,766 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found]){display:none!important}</style></head><body>
+<title>音読台</title>
+<!--
+  音読台（周天プレイヤー Phase1）
+  変更点（設計・実装指示書 STEP1〜6対応）:
+    - [間：N秒] を認識するスクリプトパーサーを追加（parseScript）
+    - 再生状態を idle / speaking / waiting / paused / finished に整理
+    - 「間」の途中で一時停止しても残り秒数を保持して再開できるようにした
+  元のUI・文単位読み上げ・声選択・速度調整・localStorage保存は変更していない。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<!-- ==== スタイル（CSS） ==== -->
+<style>
+  :root{
+    --bg:#E5E1D3;
+    --surface:#FBFAF5;
+    --surface-2:#EFEBDC;
+    --line:#D8D2BE;
+    --ink:#23211B;
+    --ink-soft:#6E6A5A;
+    --accent:#C1432B;
+    --accent-ink:#FFF7F0;
+    --accent-2:#C98A2E;
+    --shadow: 0 1px 0 rgba(35,33,27,.05), 0 12px 28px -18px rgba(35,33,27,.35);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#1B1913;
+      --surface:#242019;
+      --surface-2:#2B261D;
+      --line:#3A3427;
+      --ink:#EFE9D8;
+      --ink-soft:#A79E88;
+      --accent:#E2583D;
+      --accent-ink:#1B1913;
+      --accent-2:#E3AE5C;
+      --shadow: 0 1px 0 rgba(0,0,0,.2), 0 20px 40px -24px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#1B1913;
+    --surface:#242019;
+    --surface-2:#2B261D;
+    --line:#3A3427;
+    --ink:#EFE9D8;
+    --ink-soft:#A79E88;
+    --accent:#E2583D;
+    --accent-ink:#1B1913;
+    --accent-2:#E3AE5C;
+    --shadow: 0 1px 0 rgba(0,0,0,.2), 0 20px 40px -24px rgba(0,0,0,.7);
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .page{
+    max-width:760px;
+    margin:0 auto;
+    padding:56px 24px 80px;
+    display:flex;
+    flex-direction:column;
+    gap:28px;
+  }
+
+  /* ---------- header ---------- */
+  header{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .eyebrow{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.14em;
+    color:var(--accent);
+    text-transform:uppercase;
+  }
+  .eyebrow svg{ width:16px; height:14px; display:block; }
+  h1{
+    margin:0;
+    font-family:"Shippori Mincho",serif;
+    font-weight:800;
+    font-size:clamp(32px,6vw,44px);
+    letter-spacing:.02em;
+    text-wrap:balance;
+  }
+  header p{
+    margin:0;
+    max-width:56ch;
+    color:var(--ink-soft);
+    font-size:15px;
+    line-height:1.7;
+  }
+
+  /* ---------- manuscript card ---------- */
+  .manuscript{
+    position:relative;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    box-shadow:var(--shadow);
+    padding:28px 30px;
+  }
+  .manuscript-label{
+    position:absolute;
+    top:-11px;
+    left:24px;
+    background:var(--bg);
+    padding:0 8px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.1em;
+    color:var(--ink-soft);
+  }
+
+  textarea{
+    width:100%;
+    min-height:260px;
+    resize:vertical;
+    border:none;
+    outline:none;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        transparent, transparent 31px,
+        var(--line) 31px, var(--line) 32px
+      );
+    background-attachment:local;
+    line-height:32px;
+    font-family:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",sans-serif;
+    font-size:16.5px;
+    color:var(--ink);
+    padding:2px 2px 0;
+  }
+  textarea::placeholder{ color:var(--ink-soft); }
+  textarea:disabled{ color:var(--ink-soft); }
+
+  .reading-view{
+    display:none;
+    min-height:260px;
+    line-height:32px;
+    font-size:16.5px;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        transparent, transparent 31px,
+        var(--line) 31px, var(--line) 32px
+      );
+    padding:2px 2px 0;
+  }
+  .reading-view.is-active{ display:block; }
+  .reading-view .sentence{
+    transition:background-color .25s ease, color .25s ease;
+    border-radius:3px;
+  }
+  .reading-view .sentence.is-current{
+    background:color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .reading-view .word.is-current{
+    background:var(--accent);
+    color:var(--accent-ink);
+    padding:0 1px;
+    border-radius:2px;
+  }
+
+  .meta-row{
+    display:flex;
+    justify-content:space-between;
+    margin-top:14px;
+    padding-top:12px;
+    border-top:1px solid var(--line);
+    font-family:"JetBrains Mono",monospace;
+    font-size:12px;
+    color:var(--ink-soft);
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* ---------- control dock ---------- */
+  .dock{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:18px 20px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:20px;
+  }
+
+  .transport{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  button.play{
+    width:52px; height:52px;
+    border-radius:50%;
+    border:1px solid var(--accent);
+    background:var(--accent);
+    color:var(--accent-ink);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex:none;
+    transition:transform .15s ease, filter .15s ease;
+  }
+  button.play:hover{ filter:brightness(1.06); }
+  button.play:active{ transform:scale(.96); }
+  button.play svg{ width:18px; height:18px; }
+
+  button.stop{
+    width:40px; height:40px;
+    border-radius:50%;
+    border:1px solid var(--line);
+    background:transparent;
+    color:var(--ink-soft);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex:none;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  button.stop:hover{ border-color:var(--ink-soft); color:var(--ink); }
+  button.stop svg{ width:14px; height:14px; }
+
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  button:focus-visible, select:focus-visible, input:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+
+  .field{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    min-width:0;
+  }
+  .field-label{
+    font-family:"JetBrains Mono",monospace;
+    font-size:10.5px;
+    letter-spacing:.08em;
+    color:var(--ink-soft);
+    text-transform:uppercase;
+  }
+
+  select{
+    appearance:none;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 30px 7px 10px;
+    font-size:13.5px;
+    color:var(--ink);
+    max-width:200px;
+    text-overflow:ellipsis;
+    background-image:linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%), linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+    background-position: calc(100% - 16px) center, calc(100% - 11px) center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat:no-repeat;
+    cursor:pointer;
+  }
+
+  .rate-field{ width:150px; }
+  .rate-track-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  input[type="range"]{
+    flex:1;
+    accent-color:var(--accent);
+    height:20px;
+  }
+  .rate-value{
+    font-family:"JetBrains Mono",monospace;
+    font-size:12.5px;
+    color:var(--ink);
+    width:34px;
+    text-align:right;
+    font-variant-numeric:tabular-nums;
+  }
+  .rate-ticks{
+    display:flex;
+    justify-content:space-between;
+    font-size:10px;
+    color:var(--ink-soft);
+    margin-top:1px;
+  }
+
+  .vu{
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  canvas.vu-canvas{ display:block; width:64px; height:26px; }
+  .vu-status{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    color:var(--ink-soft);
+    min-width:64px;
+  }
+
+  .notice{
+    display:none;
+    font-size:13px;
+    color:var(--ink-soft);
+    border:1px dashed var(--line);
+    border-radius:6px;
+    padding:12px 14px;
+    line-height:1.6;
+  }
+  .notice.is-visible{ display:block; }
+
+  @media (prefers-reduced-motion: reduce){
+    button.play, .reading-view .sentence{ transition:none; }
+  }
+
+  @media (max-width:520px){
+    .page{ padding:40px 16px 60px; }
+    .dock{ padding:16px; }
+    .vu{ margin-left:0; width:100%; justify-content:flex-start; }
+  }
+</style>
+
+<!-- ==== 画面構造（HTML） ==== -->
+<div class="page">
+  <header>
+    <div class="eyebrow">
+      <svg viewBox="0 0 16 14" fill="none"><rect x="0" y="5" width="2" height="4" rx="1" fill="currentColor"/><rect x="4" y="2" width="2" height="10" rx="1" fill="currentColor"/><rect x="8" y="0" width="2" height="14" rx="1" fill="currentColor"/><rect x="12" y="3" width="2" height="8" rx="1" fill="currentColor"/></svg>
+      TEXT TO SPEECH
+    </div>
+    <h1>音読台</h1>
+    <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>のように書くと、そこで指定した秒数だけ黙って待ってから続きを読み上げます。</p>
+  </header>
+
+  <div class="manuscript">
+    <span class="manuscript-label">原稿</span>
+    <textarea id="textInput" spellcheck="false" placeholder="ここに文章を入力してください…">息を吐きます。
+[間：5秒]
+身体が静かになります。
+[間：3秒]
+もう一度、ゆっくりと息を吐きます。</textarea>
+    <div id="readingView" class="reading-view" aria-live="polite"></div>
+    <div class="meta-row">
+      <span id="charCount">0 文字</span>
+      <span id="estTime">推定 0:00</span>
+    </div>
+  </div>
+
+  <div id="unsupportedNotice" class="notice">
+    お使いのブラウザは音声読み上げ（Web Speech API）に対応していないようです。最新の Chrome・Edge・Safari でお試しください。
+  </div>
+
+  <div class="dock">
+    <div class="transport">
+      <button type="button" class="play" id="playBtn" aria-label="再生">
+        <svg id="playIcon" viewBox="0 0 20 20" fill="none"><path d="M6 4L16 10L6 16V4Z" fill="currentColor"/></svg>
+      </button>
+      <button type="button" class="stop" id="stopBtn" aria-label="停止" disabled>
+        <svg viewBox="0 0 14 14" fill="none"><rect x="0" y="0" width="14" height="14" rx="1.5" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="voiceSelect">声</label>
+      <select id="voiceSelect"><option>音声を読み込み中…</option></select>
+    </div>
+
+    <div class="field rate-field">
+      <label class="field-label" for="rateInput">速さ</label>
+      <div class="rate-track-row">
+        <input type="range" id="rateInput" min="0.5" max="2" step="0.1" value="1">
+        <span class="rate-value" id="rateValue">1.0×</span>
+      </div>
+      <div class="rate-ticks"><span>ゆっくり</span><span>ふつう</span><span>はやい</span></div>
+    </div>
+
+    <div class="vu">
+      <canvas class="vu-canvas" id="vuCanvas" width="64" height="26"></canvas>
+      <span class="vu-status" id="vuStatus">待機中</span>
+    </div>
+  </div>
+</div>
+
+<!-- ==== 動作ロジック（JavaScript） ==== -->
+<script>
+(function(){
+  var textInput = document.getElementById('textInput');
+  var readingView = document.getElementById('readingView');
+  var charCountEl = document.getElementById('charCount');
+  var estTimeEl = document.getElementById('estTime');
+  var playBtn = document.getElementById('playBtn');
+  var playIcon = document.getElementById('playIcon');
+  var stopBtn = document.getElementById('stopBtn');
+  var voiceSelect = document.getElementById('voiceSelect');
+  var rateInput = document.getElementById('rateInput');
+  var rateValue = document.getElementById('rateValue');
+  var vuStatus = document.getElementById('vuStatus');
+  var vuCanvas = document.getElementById('vuCanvas');
+  var vuCtx = vuCanvas.getContext('2d');
+  var unsupportedNotice = document.getElementById('unsupportedNotice');
+
+  var ICON_PLAY = '<path d="M6 4L16 10L6 16V4Z" fill="currentColor"/>';
+  var ICON_PAUSE = '<rect x="4" y="3" width="4" height="14" rx="1" fill="currentColor"/><rect x="12" y="3" width="4" height="14" rx="1" fill="currentColor"/>';
+
+  var supported = 'speechSynthesis' in window;
+  if (!supported) {
+    unsupportedNotice.classList.add('is-visible');
+    playBtn.disabled = true;
+    voiceSelect.disabled = true;
+    rateInput.disabled = true;
+  }
+
+  // ==== 状態管理 ====
+  // playState: idle(未再生) / speaking(読み上げ中) / waiting(「間」で待機中) / finished(最後まで再生完了)
+  // isPaused はユーザーが一時停止ボタンを押した状態（waiting中でもspeaking中でも押せる）
+  var commands = [];        // parseScriptの結果: {type:'speak',text} | {type:'pause',seconds}
+  var sentenceSpans = {};   // commandsのindex(speakのみ) -> readingView内のspan要素
+  var cmdIndex = 0;
+  var isPlaying = false;
+  var isPaused = false;
+  var playState = 'idle';
+  var pauseTimerId = null;   // 「間」の待機に使うsetTimeoutのID
+  var pauseRemainingMs = 0;  // 「間」の残り待機時間（一時停止中も保持する）
+  var pauseStartedAt = 0;    // 直近で待機を開始/再開した時刻
+  var voices = [];
+
+  function splitSentences(text) {
+    var parts = text.split(/(?<=[。！？!?\n])/);
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p.trim().length > 0) out.push(p);
+    }
+    return out;
+  }
+
+  // ==== スクリプトパーサー（[間：N秒] 対応） ====
+  // 「[間：5秒]」「[間:5秒]」「[間 5秒]」のいずれも1つの正規表現で認識する。
+  // マッチした部分自体は読み上げず、pauseコマンドに変換する。
+  var PAUSE_PATTERN = /\[間\s*[:：]?\s*(\d+(?:\.\d+)?)\s*秒\]/g;
+
+  function parseScript(text) {
+    var result = [];
+    var lastIndex = 0;
+    var match;
+
+    function pushSpeakChunk(chunk) {
+      var pieces = splitSentences(chunk);
+      for (var i = 0; i < pieces.length; i++) {
+        result.push({ type: 'speak', text: pieces[i] });
+      }
+    }
+
+    PAUSE_PATTERN.lastIndex = 0;
+    while ((match = PAUSE_PATTERN.exec(text)) !== null) {
+      pushSpeakChunk(text.slice(lastIndex, match.index));
+      result.push({ type: 'pause', seconds: parseFloat(match[1]) });
+      lastIndex = PAUSE_PATTERN.lastIndex;
+    }
+    pushSpeakChunk(text.slice(lastIndex));
+
+    return result;
+  }
+
+  function updateMeta() {
+    var text = textInput.value;
+    var count = text.replace(/\s/g, '').length;
+    charCountEl.textContent = count + ' 文字';
+    var rate = parseFloat(rateInput.value);
+    var seconds = Math.round((count * 0.16) / rate);
+    var m = Math.floor(seconds / 60);
+    var s = seconds % 60;
+    estTimeEl.textContent = '推定 ' + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  textInput.addEventListener('input', updateMeta);
+  updateMeta();
+
+  rateInput.addEventListener('input', function () {
+    rateValue.textContent = parseFloat(rateInput.value).toFixed(1) + '×';
+    updateMeta();
+    saveSettings();
+  });
+
+  // ---------- voices ----------
+  function populateVoices() {
+    voices = supported ? window.speechSynthesis.getVoices() : [];
+    if (!voices.length) return;
+
+    var jaVoices = voices.filter(function (v) { return v.lang && v.lang.toLowerCase().indexOf('ja') === 0; });
+    var otherVoices = voices.filter(function (v) { return jaVoices.indexOf(v) === -1; });
+
+    voiceSelect.innerHTML = '';
+    if (jaVoices.length) {
+      var jaGroup = document.createElement('optgroup');
+      jaGroup.label = '日本語';
+      jaVoices.forEach(function (v, i) {
+        var opt = document.createElement('option');
+        opt.value = v.name;
+        opt.textContent = v.name + (v.localService ? '' : '（ネットワーク）');
+        jaGroup.appendChild(opt);
+      });
+      voiceSelect.appendChild(jaGroup);
+    }
+    if (otherVoices.length) {
+      var otherGroup = document.createElement('optgroup');
+      otherGroup.label = 'その他の言語';
+      otherVoices.forEach(function (v) {
+        var opt = document.createElement('option');
+        opt.value = v.name;
+        opt.textContent = v.name + ' (' + v.lang + ')';
+        otherGroup.appendChild(opt);
+      });
+      voiceSelect.appendChild(otherGroup);
+    }
+
+    var saved = loadSettings();
+    if (saved && saved.voiceName && voices.some(function (v) { return v.name === saved.voiceName; })) {
+      voiceSelect.value = saved.voiceName;
+    }
+  }
+
+  if (supported) {
+    populateVoices();
+    window.speechSynthesis.onvoiceschanged = populateVoices;
+  }
+
+  function getSelectedVoice() {
+    var name = voiceSelect.value;
+    return voices.find(function (v) { return v.name === name; }) || null;
+  }
+
+  // ---------- settings persistence ----------
+  function saveSettings() {
+    try {
+      localStorage.setItem('ondokudai:settings', JSON.stringify({
+        voiceName: voiceSelect.value,
+        rate: rateInput.value
+      }));
+    } catch (e) {}
+  }
+  function loadSettings() {
+    try {
+      var raw = localStorage.getItem('ondokudai:settings');
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  (function restoreRate() {
+    var saved = loadSettings();
+    if (saved && saved.rate) {
+      rateInput.value = saved.rate;
+      rateValue.textContent = parseFloat(saved.rate).toFixed(1) + '×';
+    }
+  })();
+  voiceSelect.addEventListener('change', saveSettings);
+
+  // ---------- reading view ----------
+  // pauseコマンドには対応するspanを作らない（読み上げないので画面上に表示する文字がない）。
+  function buildReadingView() {
+    readingView.innerHTML = '';
+    sentenceSpans = {};
+    commands.forEach(function (cmd, idx) {
+      if (cmd.type !== 'speak') return;
+      var span = document.createElement('span');
+      span.className = 'sentence';
+      span.dataset.index = idx;
+      span.textContent = cmd.text;
+      readingView.appendChild(span);
+      sentenceSpans[idx] = span;
+    });
+  }
+
+  function highlightCommand(idx) {
+    Object.keys(sentenceSpans).forEach(function (key) {
+      sentenceSpans[key].classList.toggle('is-current', Number(key) === idx);
+    });
+    var current = sentenceSpans[idx];
+    if (current && current.scrollIntoView) {
+      current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  // ---------- VU meter ----------
+  var vuFrame = null;
+  var vuPhase = 0;
+  function drawVU() {
+    var w = vuCanvas.width, h = vuCanvas.height;
+    vuCtx.clearRect(0, 0, w, h);
+    var bars = 9;
+    var barW = 3;
+    var gap = (w - bars * barW) / (bars - 1);
+    var accent = getComputedStyle(document.body).getPropertyValue('--accent-2').trim() || '#C98A2E';
+    var speaking = playState === 'speaking';
+    for (var i = 0; i < bars; i++) {
+      var amp;
+      if (speaking) {
+        amp = 0.25 + 0.75 * Math.abs(Math.sin(vuPhase * 0.18 + i * 0.9)) * (0.5 + 0.5 * Math.random());
+      } else {
+        amp = 0.08;
+      }
+      var barH = Math.max(2, amp * h);
+      vuCtx.fillStyle = accent;
+      vuCtx.globalAlpha = speaking ? 1 : 0.35;
+      vuCtx.fillRect(i * (barW + gap), h - barH, barW, barH);
+    }
+    vuCtx.globalAlpha = 1;
+
+    // 「間」の待機中は残り秒数をカウントダウン表示する（新しいsetIntervalを作らず、既存の描画ループに相乗り）
+    if (playState === 'waiting' && isPlaying && !isPaused) {
+      var remainingSec = Math.max(0, Math.ceil((pauseRemainingMs - (Date.now() - pauseStartedAt)) / 1000));
+      vuStatus.textContent = '間 残り' + remainingSec + '秒';
+    }
+
+    vuPhase++;
+    vuFrame = requestAnimationFrame(drawVU);
+  }
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduceMotion) {
+    drawVU();
+  } else {
+    vuCtx.fillStyle = '#C98A2E';
+    vuCtx.fillRect(0, 20, 64, 6);
+  }
+
+  // ==== 再生エンジン ====
+  function setPlayingUI(playing) {
+    isPlaying = playing;
+    playIcon.innerHTML = playing && !isPaused ? ICON_PAUSE : ICON_PLAY;
+    playBtn.setAttribute('aria-label', playing && !isPaused ? '一時停止' : '再生');
+    stopBtn.disabled = !playing;
+    textInput.style.display = playing ? 'none' : 'block';
+    readingView.classList.toggle('is-active', playing);
+    vuStatus.textContent = !playing ? '待機中' : (isPaused ? '一時停止' : '読み上げ中');
+  }
+
+  function clearPauseTimer() {
+    if (pauseTimerId !== null) {
+      clearTimeout(pauseTimerId);
+      pauseTimerId = null;
+    }
+  }
+
+  // commands[idx] を実行する。speakなら読み上げ、pauseなら指定秒数だけ待ってから次へ進む。
+  function runCommand(idx) {
+    if (idx >= commands.length) {
+      stopPlayback('finished');
+      return;
+    }
+    cmdIndex = idx;
+    var cmd = commands[idx];
+
+    if (cmd.type === 'pause') {
+      playState = 'waiting';
+      pauseRemainingMs = cmd.seconds * 1000;
+      pauseStartedAt = Date.now();
+      pauseTimerId = setTimeout(function () {
+        if (isPlaying && !isPaused) runCommand(idx + 1);
+      }, pauseRemainingMs);
+      return;
+    }
+
+    playState = 'speaking';
+    highlightCommand(idx);
+    var utter = new SpeechSynthesisUtterance(cmd.text);
+    var voice = getSelectedVoice();
+    if (voice) {
+      utter.voice = voice;
+      utter.lang = voice.lang;
+    } else {
+      utter.lang = 'ja-JP';
+    }
+    utter.rate = parseFloat(rateInput.value);
+    utter.onend = function () {
+      if (isPlaying && !isPaused) runCommand(idx + 1);
+    };
+    utter.onerror = function () {
+      if (isPlaying && !isPaused) runCommand(idx + 1);
+    };
+    window.speechSynthesis.speak(utter);
+  }
+
+  function startPlayback() {
+    var text = textInput.value;
+    commands = parseScript(text);
+    if (!commands.length) return;
+    buildReadingView();
+    window.speechSynthesis.cancel();
+    clearPauseTimer();
+    isPaused = false;
+    setPlayingUI(true);
+    runCommand(0);
+  }
+
+  function togglePauseResume() {
+    if (isPaused) {
+      isPaused = false;
+      if (playState === 'waiting') {
+        // 「間」の途中で止めていた場合は、残り時間だけ再度待ってから次へ進む
+        pauseStartedAt = Date.now();
+        pauseTimerId = setTimeout(function () {
+          if (isPlaying && !isPaused) runCommand(cmdIndex + 1);
+        }, pauseRemainingMs);
+      } else {
+        window.speechSynthesis.resume();
+      }
+      setPlayingUI(true);
+      playIcon.innerHTML = ICON_PAUSE;
+    } else {
+      isPaused = true;
+      if (playState === 'waiting') {
+        // 経過した分だけ残り時間を減らして覚えておく
+        clearPauseTimer();
+        pauseRemainingMs = Math.max(0, pauseRemainingMs - (Date.now() - pauseStartedAt));
+      } else {
+        window.speechSynthesis.pause();
+      }
+      playIcon.innerHTML = ICON_PLAY;
+      vuStatus.textContent = '一時停止';
+    }
+  }
+
+  function stopPlayback(reason) {
+    window.speechSynthesis.cancel();
+    clearPauseTimer();
+    isPaused = false;
+    playState = reason === 'finished' ? 'finished' : 'idle';
+    setPlayingUI(false);
+    Object.keys(sentenceSpans).forEach(function (key) {
+      sentenceSpans[key].classList.remove('is-current');
+    });
+  }
+
+  playBtn.addEventListener('click', function () {
+    if (!supported) return;
+    if (!isPlaying) {
+      startPlayback();
+    } else {
+      togglePauseResume();
+    }
+  });
+
+  stopBtn.addEventListener('click', function () {
+    if (!supported) return;
+    stopPlayback('idle');
+  });
+
+  window.addEventListener('beforeunload', function () {
+    if (supported) window.speechSynthesis.cancel();
+  });
+})();
+</script>
+
+</body></html>
