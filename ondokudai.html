@@ -101,6 +101,32 @@
     line-height:1.7;
   }
 
+  /* ---------- preset dock ---------- */
+  .preset-dock{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:10px;
+  }
+  .preset-dock-label{ margin-right:2px; }
+  button.preset-btn{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:7px 16px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:13px;
+    color:var(--ink);
+    cursor:pointer;
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease;
+  }
+  button.preset-btn:hover{ border-color:var(--accent); }
+  button.preset-btn.is-selected{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+
   /* ---------- manuscript card ---------- */
   .manuscript{
     position:relative;
@@ -345,6 +371,14 @@
     <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>のように書くと、そこで指定した秒数だけ黙って待ってから続きを読み上げます。</p>
   </header>
 
+  <div class="preset-dock" role="group" aria-label="読み上げモードのプリセット">
+    <span class="field-label preset-dock-label">モード</span>
+    <button type="button" class="preset-btn" data-preset="normal">通常音読</button>
+    <button type="button" class="preset-btn" data-preset="lecture">講座</button>
+    <button type="button" class="preset-btn" data-preset="wish">願望実現</button>
+    <button type="button" class="preset-btn" data-preset="sleep">睡眠</button>
+  </div>
+
   <div class="manuscript">
     <span class="manuscript-label">原稿</span>
     <textarea id="textInput" spellcheck="false" placeholder="ここに文章を入力してください…">息を吐きます。
@@ -527,6 +561,48 @@
     saveSettings();
   });
 
+  // ==== プリセット（速さ・声の高さ・音量のまとめ切り替え） ====
+  var PRESETS = {
+    normal:  { rate: 1.0,  pitch: 1.0,  volume: 1.0 }, // 通常音読
+    lecture: { rate: 0.93, pitch: 1.0,  volume: 0.8 }, // 講座
+    wish:    { rate: 0.82, pitch: 0.95, volume: 0.6 }, // 願望実現
+    sleep:   { rate: 0.70, pitch: 0.90, volume: 0.4 }  // 睡眠
+  };
+  var presetButtons = document.querySelectorAll('.preset-btn');
+
+  function setSelectedPreset(key) {
+    presetButtons.forEach(function (btn) {
+      btn.classList.toggle('is-selected', btn.dataset.preset === key);
+    });
+    try { localStorage.setItem('ondokudai:preset', key || ''); } catch (e) {}
+  }
+
+  function applyPreset(key) {
+    var preset = PRESETS[key];
+    if (!preset) return;
+    rateInput.value = preset.rate;
+    rateValue.textContent = preset.rate.toFixed(1) + '×';
+    pitchInput.value = preset.pitch;
+    pitchValue.textContent = preset.pitch.toFixed(2);
+    volumeInput.value = preset.volume;
+    volumeValue.textContent = Math.round(preset.volume * 100) + '%';
+    updateMeta();
+    saveSettings();
+    setSelectedPreset(key);
+  }
+
+  presetButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      applyPreset(btn.dataset.preset);
+    });
+  });
+
+  // スライダーを手動で動かしたら、プリセットのハイライトは外す
+  // （プリセット由来の値からずれるため、選択中の見た目のままにしない）
+  [rateInput, pitchInput, volumeInput].forEach(function (input) {
+    input.addEventListener('input', function () { setSelectedPreset(null); });
+  });
+
   // ---------- voices ----------
   function populateVoices() {
     voices = supported ? window.speechSynthesis.getVoices() : [];
@@ -607,6 +683,12 @@
       volumeInput.value = saved.volume;
       volumeValue.textContent = Math.round(parseFloat(saved.volume) * 100) + '%';
     }
+  })();
+  (function restorePresetSelection() {
+    try {
+      var key = localStorage.getItem('ondokudai:preset');
+      if (key) setSelectedPreset(key);
+    } catch (e) {}
   })();
   voiceSelect.addEventListener('change', saveSettings);
 
