@@ -501,6 +501,31 @@
     font-variant-numeric:tabular-nums;
   }
 
+  /* ---------- section nav (## 見出しで区切られたセクションへの移動) ---------- */
+  .section-nav-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-top:12px;
+  }
+  button.section-nav-btn{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:6px 14px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:12.5px;
+    color:var(--ink);
+    cursor:pointer;
+    transition:border-color .15s ease, background-color .15s ease, color .15s ease;
+  }
+  button.section-nav-btn:hover{ border-color:var(--accent); }
+  button.section-nav-btn.is-current{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+
   /* ---------- control dock ---------- */
   .dock{
     background:var(--surface-2);
@@ -659,7 +684,7 @@
       TEXT TO SPEECH
     </div>
     <h1>音読台</h1>
-    <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>のように書くと、そこで指定した秒数だけ黙って待ってから続きを読み上げます。</p>
+    <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>で指定秒数だけ黙って待ち、<code>## 見出し</code>で区切るとセクションごとに移動できます。</p>
   </header>
 
   <div class="tab-dock" role="tablist" aria-label="モード切り替え">
@@ -683,7 +708,12 @@
 
   <div class="manuscript">
     <span class="manuscript-label">原稿</span>
-    <textarea id="textInput" spellcheck="false" placeholder="ここに文章を入力してください…">息を吐きます。
+    <textarea id="textInput" spellcheck="false" placeholder="ここに文章を入力してください…">## 導入
+今から行うのは、静かに呼吸を整える練習です。
+[間：3秒]
+
+## 呼吸を整える
+息を吐きます。
 [間：5秒]
 身体が静かになります。
 [間：3秒]
@@ -693,6 +723,7 @@
       <span id="charCount">0 文字</span>
       <span id="estTime">推定 0:00</span>
     </div>
+    <div id="sectionNavRow" class="section-nav-row" hidden></div>
   </div>
 
   <div class="dock script-dock">
@@ -887,6 +918,7 @@
   var readingView = document.getElementById('readingView');
   var charCountEl = document.getElementById('charCount');
   var estTimeEl = document.getElementById('estTime');
+  var sectionNavRow = document.getElementById('sectionNavRow');
   var playBtn = document.getElementById('playBtn');
   var playIcon = document.getElementById('playIcon');
   var stopBtn = document.getElementById('stopBtn');
@@ -946,10 +978,11 @@
     return out;
   }
 
-  // ==== スクリプトパーサー（[間：N秒] 対応） ====
-  // 「[間：5秒]」「[間:5秒]」「[間 5秒]」のいずれも1つの正規表現で認識する。
-  // マッチした部分自体は読み上げず、pauseコマンドに変換する。
-  var PAUSE_PATTERN = /\[間\s*[:：]?\s*(\d+(?:\.\d+)?)\s*秒\]/g;
+  // ==== スクリプトパーサー（[間：N秒] ＋ ## セクション見出し 対応） ====
+  // 「[間：5秒]」「[間:5秒]」「[間 5秒]」はpauseコマンドに、
+  // 行頭の「## 見出し」はsectionコマンドに変換する。どちらも読み上げない。
+  // (?:...)|(?:...) の2つの候補をまとめて1回のスキャンで拾う。
+  var COMMAND_PATTERN = /\[間\s*[:：]?\s*(\d+(?:\.\d+)?)\s*秒\]|^##[ \t]*(.+)$/gm;
 
   function parseScript(text) {
     var result = [];
@@ -963,15 +996,67 @@
       }
     }
 
-    PAUSE_PATTERN.lastIndex = 0;
-    while ((match = PAUSE_PATTERN.exec(text)) !== null) {
+    COMMAND_PATTERN.lastIndex = 0;
+    while ((match = COMMAND_PATTERN.exec(text)) !== null) {
       pushSpeakChunk(text.slice(lastIndex, match.index));
-      result.push({ type: 'pause', seconds: parseFloat(match[1]) });
-      lastIndex = PAUSE_PATTERN.lastIndex;
+      if (match[1] !== undefined) {
+        result.push({ type: 'pause', seconds: parseFloat(match[1]) });
+      } else if (match[2] !== undefined) {
+        result.push({ type: 'section', title: match[2].trim() });
+      }
+      lastIndex = COMMAND_PATTERN.lastIndex;
     }
     pushSpeakChunk(text.slice(lastIndex));
 
     return result;
+  }
+
+  // commandsの中からsectionコマンドだけを抜き出し、{title, index}の一覧を作る。
+  // indexはそのセクションの先頭がcommandsの何番目かを表し、jumpToSection()に渡す。
+  function collectSections(cmds) {
+    var list = [];
+    cmds.forEach(function (cmd, idx) {
+      if (cmd.type === 'section') list.push({ title: cmd.title, index: idx });
+    });
+    return list;
+  }
+
+  // ==== セクション移動（## 見出しで区切られた講座内を任意の場所へ移動する） ====
+  var sectionList = [];        // [{title, index}] indexはcommands配列上の位置
+  var sectionNavButtons = [];  // [{btn, index}] ハイライト更新用
+  var currentSectionIndex = -1;
+
+  function refreshSectionNav() {
+    sectionList = collectSections(parseScript(textInput.value));
+    sectionNavRow.innerHTML = '';
+    sectionNavButtons = [];
+    if (!sectionList.length) {
+      sectionNavRow.hidden = true;
+      return;
+    }
+    sectionNavRow.hidden = false;
+    sectionList.forEach(function (sec) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'section-nav-btn';
+      btn.textContent = sec.title;
+      btn.addEventListener('click', function () { jumpToSection(sec.index); });
+      sectionNavRow.appendChild(btn);
+      sectionNavButtons.push({ btn: btn, index: sec.index });
+    });
+    highlightSectionNav(currentSectionIndex);
+  }
+
+  function highlightSectionNav(cmdIdx) {
+    sectionNavButtons.forEach(function (entry) {
+      entry.btn.classList.toggle('is-current', entry.index === cmdIdx);
+    });
+  }
+
+  // 指定したセクションの先頭から（再生中でも、止まっていても）再生を始める。
+  // startPlayback()自体がcancel/クリア/暗転解除などの後始末をすべてやってくれるのでそのまま呼ぶ。
+  function jumpToSection(idx) {
+    startPlayback(idx);
   }
 
   function updateMeta() {
@@ -985,8 +1070,12 @@
     estTimeEl.textContent = '推定 ' + m + ':' + (s < 10 ? '0' : '') + s;
   }
 
-  textInput.addEventListener('input', updateMeta);
+  textInput.addEventListener('input', function () {
+    updateMeta();
+    refreshSectionNav();
+  });
   updateMeta();
+  refreshSectionNav();
 
   rateInput.addEventListener('input', function () {
     rateValue.textContent = parseFloat(rateInput.value).toFixed(1) + '×';
@@ -1359,6 +1448,13 @@
     persistPlaybackPosition(idx); // 保存済み原稿なら、今どこまで進んだかを都度書き出す
     var cmd = commands[idx];
 
+    if (cmd.type === 'section') {
+      currentSectionIndex = idx;
+      highlightSectionNav(idx);
+      runCommand(idx + 1); // セクション区切り自体は読み上げず、間も置かずに次へ進む
+      return;
+    }
+
     if (cmd.type === 'pause') {
       playState = 'waiting';
       pauseRemainingMs = cmd.seconds * 1000;
@@ -1445,6 +1541,8 @@
     Object.keys(sentenceSpans).forEach(function (key) {
       sentenceSpans[key].classList.remove('is-current');
     });
+    currentSectionIndex = -1;
+    highlightSectionNav(-1);
   }
 
   // 保存済み原稿に続きの位置があれば確認してから再生を始める。
@@ -1587,6 +1685,7 @@
   function applyScriptRecord(record) {
     textInput.value = record.text;
     updateMeta();
+    refreshSectionNav();
 
     rateInput.value = record.rate;
     rateValue.textContent = parseFloat(record.rate).toFixed(1) + '×';
