@@ -265,6 +265,61 @@
     color:var(--ink-soft);
   }
 
+  /* ---------- script list (原稿一覧) ---------- */
+  .script-list-empty{ margin:0; color:var(--ink-soft); font-size:13.5px; padding:8px 0 4px; }
+  .script-list-group{ margin-top:20px; }
+  .script-list-group:first-child{ margin-top:4px; }
+  .script-list-group-title{
+    margin:0 0 6px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--accent-2);
+  }
+  .script-list-row{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:10px 16px;
+    padding:12px 0;
+    border-top:1px solid var(--line);
+  }
+  .script-list-group .script-list-row:first-of-type{ border-top:none; }
+  .script-list-info{ flex:1 1 200px; min-width:0; }
+  .script-list-title{
+    font-size:14px;
+    color:var(--ink);
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .script-list-meta{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11.5px;
+    color:var(--ink-soft);
+    margin-top:2px;
+    font-variant-numeric:tabular-nums;
+  }
+  .script-list-actions{ display:flex; gap:6px; flex-wrap:wrap; flex:0 0 auto; }
+  .script-list-actions button{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:5px 13px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:12px;
+    color:var(--ink);
+    cursor:pointer;
+  }
+  .script-list-actions button:hover{ border-color:var(--accent); }
+  .script-list-actions button.primary{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+  .script-list-actions button.danger{ color:var(--accent); }
+
   /* ---------- sleep overlay (睡眠モードの暗転画面) ---------- */
   /* テーマ(ライト/ダーク)に関わらず常にほぼ黒にするため、ページのトークンとは別の固定色を使う */
   .sleep-overlay{
@@ -610,6 +665,7 @@
   <div class="tab-dock" role="tablist" aria-label="モード切り替え">
     <button type="button" class="tab-btn is-selected" data-tab="guided" role="tab" aria-selected="true">誘導瞑想</button>
     <button type="button" class="tab-btn" data-tab="timer" role="tab" aria-selected="false">タイマー瞑想</button>
+    <button type="button" class="tab-btn" data-tab="list" role="tab" aria-selected="false">原稿一覧</button>
   </div>
 
   <div id="guidedSection">
@@ -787,6 +843,14 @@
         <button type="button" class="play-btn-wide" id="timerAgainBtn">もう一度</button>
         <button type="button" class="btn-outline" id="timerChooseBtn">時間を選び直す</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ==== listSection（原稿一覧） ==== -->
+  <div id="listSection" hidden>
+    <div class="manuscript">
+      <span class="manuscript-label">原稿一覧</span>
+      <div id="scriptListContainer" class="script-list-container"></div>
     </div>
   </div>
 </div>
@@ -1502,13 +1566,9 @@
     setScriptStatus('「' + title + '」を保存しました。');
   });
 
-  scriptLoadBtn.addEventListener('click', function () {
-    var id = savedScriptSelect.value;
-    if (!id) return;
-    var list = loadScripts();
-    var record = list.find(function (s) { return s.id === id; });
-    if (!record) return;
-
+  // 保存済みの1件を、原稿欄・速さ・声などの各コントロールへまとめて反映する。
+  // 「呼び出す」ボタンからも、原稿一覧の「編集」「再生」からも、この同じ処理を使う。
+  function applyScriptRecord(record) {
     textInput.value = record.text;
     updateMeta();
 
@@ -1528,27 +1588,178 @@
     currentScriptId = record.id;
 
     saveSettings();
-    setScriptStatus('「' + record.title + '」を呼び出しました。');
-  });
+  }
 
-  scriptDeleteBtn.addEventListener('click', function () {
-    var id = savedScriptSelect.value;
-    if (!id) return;
+  // 確認ダイアログ込みの削除本体。「保存した原稿」パネルからも原稿一覧からも使う。
+  function deleteScriptById(id) {
     var list = loadScripts();
     var record = list.find(function (s) { return s.id === id; });
-    if (!record) return;
-    if (!window.confirm('「' + record.title + '」を削除しますか？この操作は取り消せません。')) return;
+    if (!record) return false;
+    if (!window.confirm('「' + record.title + '」を削除しますか？この操作は取り消せません。')) return false;
     list = list.filter(function (s) { return s.id !== id; });
     saveScripts(list);
     if (currentScriptId === id) {
       currentScriptId = null;
       scriptTitleInput.value = '';
     }
-    refreshSavedScriptSelect();
     setScriptStatus('削除しました。');
+    return true;
+  }
+
+  scriptLoadBtn.addEventListener('click', function () {
+    var id = savedScriptSelect.value;
+    if (!id) return;
+    var record = loadScripts().find(function (s) { return s.id === id; });
+    if (!record) return;
+    applyScriptRecord(record);
+    setScriptStatus('「' + record.title + '」を呼び出しました。');
+  });
+
+  scriptDeleteBtn.addEventListener('click', function () {
+    var id = savedScriptSelect.value;
+    if (!id) return;
+    if (deleteScriptById(id)) refreshSavedScriptSelect();
   });
 
   refreshSavedScriptSelect();
+
+  // ==== 原稿一覧（カテゴリごとに整理し、各原稿に 再生/編集/コピー/削除 を用意する） ====
+  var listSection = document.getElementById('listSection');
+  var scriptListContainer = document.getElementById('scriptListContainer');
+
+  function estimateScriptDuration(text, rate) {
+    var count = text.replace(/\s/g, '').length;
+    var seconds = Math.round((count * 0.16) / (rate || 1));
+    var m = Math.floor(seconds / 60);
+    var s = seconds % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function renderScriptList() {
+    var list = loadScripts();
+    scriptListContainer.innerHTML = '';
+    if (!list.length) {
+      var empty = document.createElement('p');
+      empty.className = 'script-list-empty';
+      empty.textContent = 'まだ保存された原稿はありません。「誘導瞑想」タブで原稿を書いて保存してください。';
+      scriptListContainer.appendChild(empty);
+      return;
+    }
+    SCRIPT_CATEGORY_ORDER.forEach(function (cat) {
+      var itemsInCat = list.filter(function (s) { return s.category === cat; });
+      if (!itemsInCat.length) return;
+
+      var group = document.createElement('div');
+      group.className = 'script-list-group';
+      var heading = document.createElement('p');
+      heading.className = 'script-list-group-title';
+      heading.textContent = cat;
+      group.appendChild(heading);
+
+      itemsInCat.forEach(function (record) {
+        var row = document.createElement('div');
+        row.className = 'script-list-row';
+
+        var info = document.createElement('div');
+        info.className = 'script-list-info';
+        var titleEl = document.createElement('div');
+        titleEl.className = 'script-list-title';
+        titleEl.textContent = record.title;
+        var metaEl = document.createElement('div');
+        metaEl.className = 'script-list-meta';
+        metaEl.textContent = estimateScriptDuration(record.text, record.rate);
+        info.appendChild(titleEl);
+        info.appendChild(metaEl);
+
+        var actions = document.createElement('div');
+        actions.className = 'script-list-actions';
+
+        var playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'primary';
+        playBtn.textContent = '再生';
+        playBtn.addEventListener('click', function () { playScriptFromList(record.id); });
+
+        var editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = '編集';
+        editBtn.addEventListener('click', function () { editScriptFromList(record.id); });
+
+        var copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.textContent = 'コピー';
+        copyBtn.addEventListener('click', function () { copyScriptFromList(record.id); });
+
+        var deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'danger';
+        deleteBtn.textContent = '削除';
+        deleteBtn.addEventListener('click', function () { deleteScriptFromList(record.id); });
+
+        actions.appendChild(playBtn);
+        actions.appendChild(editBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(deleteBtn);
+
+        row.appendChild(info);
+        row.appendChild(actions);
+        group.appendChild(row);
+      });
+
+      scriptListContainer.appendChild(group);
+    });
+  }
+
+  function editScriptFromList(id) {
+    var record = loadScripts().find(function (s) { return s.id === id; });
+    if (!record) return;
+    applyScriptRecord(record);
+    refreshSavedScriptSelect();
+    switchTab('guided');
+    setScriptStatus('「' + record.title + '」を呼び出しました。');
+  }
+
+  function playScriptFromList(id) {
+    var record = loadScripts().find(function (s) { return s.id === id; });
+    if (!record) return;
+    applyScriptRecord(record);
+    refreshSavedScriptSelect();
+    switchTab('guided');
+    startPlayback();
+  }
+
+  function copyScriptFromList(id) {
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === id; });
+    if (!record) return;
+    var now = new Date().toISOString();
+    var copy = {
+      id: genScriptId(),
+      title: record.title + '（コピー）',
+      text: record.text,
+      category: record.category,
+      mode: record.mode,
+      rate: record.rate,
+      voiceName: record.voiceName,
+      pitch: record.pitch,
+      volume: record.volume,
+      lastPosition: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    list.push(copy);
+    saveScripts(list);
+    renderScriptList();
+    refreshSavedScriptSelect();
+    setScriptStatus('「' + record.title + '」をコピーしました。');
+  }
+
+  function deleteScriptFromList(id) {
+    if (deleteScriptById(id)) {
+      renderScriptList();
+      refreshSavedScriptSelect();
+    }
+  }
 
   // ==== タブ切り替え（誘導瞑想 / タイマー瞑想） ====
   var guidedSection = document.getElementById('guidedSection');
@@ -1556,15 +1767,18 @@
   var tabButtons = document.querySelectorAll('.tab-btn');
 
   function switchTab(tab) {
-    if (tab === 'timer') {
-      if (isPlaying) stopPlayback('idle'); // 誘導瞑想の再生中にタイマーへ切り替えたら止める
-      guidedSection.hidden = true;
-      timerSection.hidden = false;
-    } else {
-      timerPause(); // タイマー動作中に誘導瞑想へ切り替えたら一時停止扱いにする
-      guidedSection.hidden = false;
-      timerSection.hidden = true;
-    }
+    var currentTab = document.querySelector('.tab-btn.is-selected');
+    currentTab = currentTab ? currentTab.dataset.tab : 'guided';
+    if (tab === currentTab) return; // 同じタブを選び直しただけなら何もしない（再生中のものを誤って止めない）
+
+    if (isPlaying) stopPlayback('idle'); // 誘導瞑想が再生中なら、タブを離れる前に止める
+    timerPause();                        // タイマーが動作中なら、タブを離れる前に一時停止にする
+
+    guidedSection.hidden = tab !== 'guided';
+    timerSection.hidden = tab !== 'timer';
+    listSection.hidden = tab !== 'list';
+    if (tab === 'list') renderScriptList();
+
     tabButtons.forEach(function (btn) {
       var selected = btn.dataset.tab === tab;
       btn.classList.toggle('is-selected', selected);
