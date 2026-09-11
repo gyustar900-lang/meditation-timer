@@ -324,6 +324,62 @@
     color:var(--ink-soft);
   }
 
+  /* ---------- term dictionary (専門用語辞書) ---------- */
+  details.dict-panel{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:8px;
+    box-shadow:var(--shadow);
+    padding:16px 20px;
+  }
+  details.dict-panel summary{
+    cursor:pointer;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-weight:700;
+    font-size:14px;
+    color:var(--ink);
+  }
+  details.dict-panel[open] summary{ margin-bottom:12px; }
+  .dict-note{ text-align:left; margin-bottom:14px; }
+  .dict-list{ display:flex; flex-direction:column; gap:0; margin-bottom:14px; }
+  .dict-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:7px 0;
+    border-top:1px solid var(--line);
+  }
+  .dict-list .dict-row:first-child{ border-top:none; }
+  .dict-term{ font-weight:700; color:var(--ink); min-width:84px; font-size:13.5px; }
+  .dict-reading{ color:var(--ink-soft); font-family:"JetBrains Mono",monospace; font-size:12.5px; flex:1; }
+  .dict-row button{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:3px 11px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:11.5px;
+    color:var(--ink);
+    cursor:pointer;
+  }
+  .dict-row button:hover{ border-color:var(--accent); }
+  .dict-add-row{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-bottom:10px;
+  }
+  .dict-add-row input{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 10px;
+    font-size:13px;
+    color:var(--ink);
+    flex:1;
+    min-width:120px;
+  }
+
   /* ---------- script list (原稿一覧) ---------- */
   .script-list-empty{ margin:0; color:var(--ink-soft); font-size:13.5px; padding:8px 0 4px; }
   .script-list-group{ margin-top:20px; }
@@ -789,6 +845,7 @@
 息を吐きます。
 [間：5秒]
 身体が静かになります。
+丹田に意識を向けます。
 [間：3秒]
 【ゆっくり】
 もう一度、ゆっくりと息を吐きます。</textarea>
@@ -840,6 +897,18 @@
     </div>
   </div>
   <p class="script-status" id="scriptStatus" aria-live="polite"></p>
+
+  <details class="dict-panel">
+    <summary>専門用語辞書（読み仮名の自動変換）</summary>
+    <p class="timer-instruction dict-note">ここに登録した用語は、原稿にそのまま書いても自動で読み仮名に変換されます。原稿の中で <code>丹田{たんでん}</code> のように書けば、その場だけ好きな読みを個別に指定できます（画面には常に元の表記が出ます）。</p>
+    <div id="dictList" class="dict-list"></div>
+    <div class="dict-add-row">
+      <input type="text" id="dictTermInput" placeholder="用語（例：泥丸）">
+      <input type="text" id="dictReadingInput" placeholder="読み（例：でいがん）">
+      <button type="button" class="btn-outline" id="dictAddBtn">追加</button>
+    </div>
+    <button type="button" class="btn-outline danger" id="dictResetBtn">初期状態に戻す</button>
+  </details>
 
   <div id="unsupportedNotice" class="notice">
     お使いのブラウザは音声読み上げ（Web Speech API）に対応していないようです。最新の Chrome・Edge・Safari でお試しください。
@@ -1093,6 +1162,56 @@
     return out;
   }
 
+  // ==== 専門用語辞書（読み仮名の自動変換） ====
+  // 登録した用語は、原稿にそのまま書いても読み上げ時だけ自動的に読み仮名に置き換わる。
+  // 画面表示は常に元の表記（漢字）のまま。パーサーより前で初期化しておく必要がある
+  // （parseScriptの中からこの辞書を参照するため）。
+  var DEFAULT_DICTIONARY = {
+    '周天法': 'しゅうてんほう',
+    '小周天': 'しょうしゅうてん',
+    '大周天': 'だいしゅうてん',
+    '丹田': 'たんでん',
+    '任脈': 'にんみゃく',
+    '督脈': 'とくみゃく',
+    '火候': 'かこう',
+    '泥丸': 'でいがん'
+  };
+
+  function loadDictionary() {
+    try {
+      var raw = localStorage.getItem('ondokudai:dictionary');
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return Object.assign({}, DEFAULT_DICTIONARY);
+  }
+  function saveDictionary(dict) {
+    try { localStorage.setItem('ondokudai:dictionary', JSON.stringify(dict)); } catch (e) {}
+  }
+
+  var termDictionary = loadDictionary();
+
+  // 原稿内の「丹田{たんでん}」のような個別ルビ指定を、画面表示用と読み上げ用に分ける。
+  // 漢字部分は連続する漢字（CJK統合漢字＋々）のみを対象にし、直前のひらがな等を巻き込まない。
+  var RUBY_PATTERN = /([一-龠々]+)\{([^{}]+)\}/g;
+  function parseRuby(text) {
+    return {
+      display: text.replace(RUBY_PATTERN, '$1'),
+      speech: text.replace(RUBY_PATTERN, '$2')
+    };
+  }
+
+  // 辞書に登録済みの用語を読み上げテキストの中から探し、読みに置き換える。
+  // 長い用語を先に置き換えることで、短い用語が部分一致で誤爆するのを防ぐ。
+  function applyDictionaryToSpeech(text, dict) {
+    var terms = Object.keys(dict).filter(function (t) { return t; });
+    terms.sort(function (a, b) { return b.length - a.length; });
+    var result = text;
+    terms.forEach(function (term) {
+      result = result.split(term).join(dict[term]);
+    });
+    return result;
+  }
+
   // ==== スクリプトパーサー（[間：N秒] ＋ ## セクション見出し ＋ 【講師メモ】 対応） ====
   // 「[間：5秒]」はpauseコマンドに、「## 見出し」はsectionコマンドに、
   // 「【...】」は講師メモとして下のclassifyInstructorNote()が仕分けたコマンドに変換する。
@@ -1134,7 +1253,12 @@
     function pushSpeakChunk(chunk) {
       var pieces = splitSentences(chunk);
       for (var i = 0; i < pieces.length; i++) {
-        result.push({ type: 'speak', text: pieces[i] });
+        var ruby = parseRuby(pieces[i]);
+        result.push({
+          type: 'speak',
+          text: ruby.display,                                        // 画面表示用（元の表記のまま）
+          speechText: applyDictionaryToSpeech(ruby.speech, termDictionary) // 読み上げ用（個別ルビ→辞書の順で適用）
+        });
       }
     }
 
@@ -1630,7 +1754,9 @@
 
     playState = 'speaking';
     highlightCommand(idx);
-    var utter = new SpeechSynthesisUtterance(cmd.text);
+    // 画面には cmd.text（元の表記）を出したまま、実際に読み上げるのは
+    // ルビ・辞書適用済みの cmd.speechText（未指定なら cmd.text にフォールバック）
+    var utter = new SpeechSynthesisUtterance(cmd.speechText || cmd.text);
     var voice = getSelectedVoice();
     if (voice) {
       utter.voice = voice;
@@ -2377,6 +2503,70 @@
     lecturerStartTime = null;
     lecturerRunning.hidden = true;
     lecturerSetup.hidden = false;
+  });
+
+  // ==== 専門用語辞書の編集UI（データ本体のtermDictionaryはパーサーより前で定義済み） ====
+  var dictList = document.getElementById('dictList');
+  var dictTermInput = document.getElementById('dictTermInput');
+  var dictReadingInput = document.getElementById('dictReadingInput');
+  var dictAddBtn = document.getElementById('dictAddBtn');
+  var dictResetBtn = document.getElementById('dictResetBtn');
+
+  function renderDictList() {
+    dictList.innerHTML = '';
+    var terms = Object.keys(termDictionary);
+    if (!terms.length) {
+      var empty = document.createElement('p');
+      empty.className = 'script-list-empty';
+      empty.textContent = '登録された用語はありません。';
+      dictList.appendChild(empty);
+      return;
+    }
+    terms.forEach(function (term) {
+      var row = document.createElement('div');
+      row.className = 'dict-row';
+
+      var termEl = document.createElement('span');
+      termEl.className = 'dict-term';
+      termEl.textContent = term;
+
+      var readingEl = document.createElement('span');
+      readingEl.className = 'dict-reading';
+      readingEl.textContent = termDictionary[term];
+
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.textContent = '削除';
+      delBtn.addEventListener('click', function () {
+        delete termDictionary[term];
+        saveDictionary(termDictionary);
+        renderDictList();
+      });
+
+      row.appendChild(termEl);
+      row.appendChild(readingEl);
+      row.appendChild(delBtn);
+      dictList.appendChild(row);
+    });
+  }
+  renderDictList();
+
+  dictAddBtn.addEventListener('click', function () {
+    var term = dictTermInput.value.trim();
+    var reading = dictReadingInput.value.trim();
+    if (!term || !reading) return;
+    termDictionary[term] = reading;
+    saveDictionary(termDictionary);
+    dictTermInput.value = '';
+    dictReadingInput.value = '';
+    renderDictList();
+  });
+
+  dictResetBtn.addEventListener('click', function () {
+    if (!window.confirm('専門用語辞書を初期状態に戻しますか？追加・削除した内容は失われます。')) return;
+    termDictionary = Object.assign({}, DEFAULT_DICTIONARY);
+    saveDictionary(termDictionary);
+    renderDictList();
   });
 })();
 </script>
