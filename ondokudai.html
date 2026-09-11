@@ -8,6 +8,10 @@
     - 「間」の途中で一時停止しても残り秒数を保持して再開できるようにした
   元のUI・文単位読み上げ・声選択・速度調整・localStorage保存は変更していない。
 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#C1432B">
+<link rel="icon" href="icon-512.png">
+<link rel="apple-touch-icon" href="icon-512.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap">
 <!-- ==== スタイル（CSS） ==== -->
@@ -791,6 +795,14 @@
     line-height:1.6;
   }
   .notice.is-visible{ display:block; }
+  .voice-error-notice{
+    font-size:13px;
+    color:var(--accent);
+    border:1px dashed var(--accent);
+    border-radius:6px;
+    padding:10px 14px;
+    line-height:1.6;
+  }
 
   @media (prefers-reduced-motion: reduce){
     button.play, .reading-view .sentence{ transition:none; }
@@ -912,6 +924,9 @@
 
   <div id="unsupportedNotice" class="notice">
     お使いのブラウザは音声読み上げ（Web Speech API）に対応していないようです。最新の Chrome・Edge・Safari でお試しください。
+  </div>
+  <div id="voiceErrorNotice" class="voice-error-notice" hidden>
+    この端末では現在この音声を利用できません。別の音声を選択してください。
   </div>
 
   <div class="dock">
@@ -1116,6 +1131,7 @@
   var vuCanvas = document.getElementById('vuCanvas');
   var vuCtx = vuCanvas.getContext('2d');
   var unsupportedNotice = document.getElementById('unsupportedNotice');
+  var voiceErrorNotice = document.getElementById('voiceErrorNotice');
   var dimToggle = document.getElementById('dimToggle');
   var sleepOverlay = document.getElementById('sleepOverlay');
   var sleepPlayPauseBtn = document.getElementById('sleepPlayPauseBtn');
@@ -1709,6 +1725,15 @@
     instructorNoteLabel.textContent = '';
   }
 
+  // 端末側の事情（音声が使えない、ネットワーク音声にオフラインで届かない等）で
+  // 読み上げに失敗したときの案内。しばらくしたら自動的に消える。
+  var voiceErrorHideTimerId = null;
+  function showVoiceErrorNotice() {
+    voiceErrorNotice.hidden = false;
+    if (voiceErrorHideTimerId !== null) clearTimeout(voiceErrorHideTimerId);
+    voiceErrorHideTimerId = setTimeout(function () { voiceErrorNotice.hidden = true; }, 6000);
+  }
+
   function clearPauseTimer() {
     if (pauseTimerId !== null) {
       clearTimeout(pauseTimerId);
@@ -1778,6 +1803,7 @@
       pendingRateDelta = 0;
       pendingVolumeDelta = 0;
       clearInstructorNote();
+      showVoiceErrorNotice(); // この端末では現在この音声を利用できません、と案内する（STEP19）
       if (isPlaying && !isPaused) runCommand(idx + 1);
     };
     window.speechSynthesis.speak(utter);
@@ -2569,6 +2595,17 @@
     renderDictList();
   });
 })();
+
+// ==== PWA登録（オフラインでもアプリ本体を開けるようにする） ====
+// アプリのUIロジックとは無関係なので、上のIIFEの外に分けている。
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('service-worker.js').catch(function () {
+      // manifest.jsonをつけずにファイルを直接開いた場合など、登録できないことがあるが
+      // その場合もアプリ自体はオンライン中は通常どおり動く
+    });
+  });
+}
 </script>
 
 </body></html>
