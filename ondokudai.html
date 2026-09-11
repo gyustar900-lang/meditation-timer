@@ -489,6 +489,18 @@
     border-radius:2px;
   }
 
+  .instructor-note{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    margin-top:10px;
+    padding:6px 13px;
+    border-radius:999px;
+    background:color-mix(in srgb, var(--accent-2) 16%, transparent);
+    color:var(--accent-2);
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:12.5px;
+  }
   .meta-row{
     display:flex;
     justify-content:space-between;
@@ -684,7 +696,7 @@
       TEXT TO SPEECH
     </div>
     <h1>音読台</h1>
-    <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>で指定秒数だけ黙って待ち、<code>## 見出し</code>で区切るとセクションごとに移動できます。</p>
+    <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>で指定秒数だけ黙って待ち、<code>## 見出し</code>で区切るとセクションごとに移動でき、<code>【ゆっくり】</code>のような講師メモは読み上げずに指示として扱います。</p>
   </header>
 
   <div class="tab-dock" role="tablist" aria-label="モード切り替え">
@@ -709,6 +721,7 @@
   <div class="manuscript">
     <span class="manuscript-label">原稿</span>
     <textarea id="textInput" spellcheck="false" placeholder="ここに文章を入力してください…">## 導入
+【ここで受講生を見る】
 今から行うのは、静かに呼吸を整える練習です。
 [間：3秒]
 
@@ -717,8 +730,10 @@
 [間：5秒]
 身体が静かになります。
 [間：3秒]
+【ゆっくり】
 もう一度、ゆっくりと息を吐きます。</textarea>
     <div id="readingView" class="reading-view" aria-live="polite"></div>
+    <div id="instructorNoteLabel" class="instructor-note" hidden></div>
     <div class="meta-row">
       <span id="charCount">0 文字</span>
       <span id="estTime">推定 0:00</span>
@@ -919,6 +934,7 @@
   var charCountEl = document.getElementById('charCount');
   var estTimeEl = document.getElementById('estTime');
   var sectionNavRow = document.getElementById('sectionNavRow');
+  var instructorNoteLabel = document.getElementById('instructorNoteLabel');
   var playBtn = document.getElementById('playBtn');
   var playIcon = document.getElementById('playIcon');
   var stopBtn = document.getElementById('stopBtn');
@@ -966,6 +982,8 @@
   var pauseTimerId = null;   // 「間」の待機に使うsetTimeoutのID
   var pauseRemainingMs = 0;  // 「間」の残り待機時間（一時停止中も保持する）
   var pauseStartedAt = 0;    // 直近で待機を開始/再開した時刻
+  var pendingRateDelta = 0;   // 【ゆっくり】などの講師メモが、次の一文だけ速さに与える増減
+  var pendingVolumeDelta = 0; // 【少し声を落とす】などの講師メモが、次の一文だけ音量に与える増減
   var voices = [];
 
   function splitSentences(text) {
@@ -978,11 +996,37 @@
     return out;
   }
 
-  // ==== スクリプトパーサー（[間：N秒] ＋ ## セクション見出し 対応） ====
-  // 「[間：5秒]」「[間:5秒]」「[間 5秒]」はpauseコマンドに、
-  // 行頭の「## 見出し」はsectionコマンドに変換する。どちらも読み上げない。
-  // (?:...)|(?:...) の2つの候補をまとめて1回のスキャンで拾う。
-  var COMMAND_PATTERN = /\[間\s*[:：]?\s*(\d+(?:\.\d+)?)\s*秒\]|^##[ \t]*(.+)$/gm;
+  // ==== スクリプトパーサー（[間：N秒] ＋ ## セクション見出し ＋ 【講師メモ】 対応） ====
+  // 「[間：5秒]」はpauseコマンドに、「## 見出し」はsectionコマンドに、
+  // 「【...】」は講師メモとして下のclassifyInstructorNote()が仕分けたコマンドに変換する。
+  // どれも読み上げず、(?:...)|(?:...)|(?:...) の3つの候補を1回のスキャンで拾う。
+  var COMMAND_PATTERN = /\[間\s*[:：]?\s*(\d+(?:\.\d+)?)\s*秒\]|^##[ \t]*(.+)$|【([^】]+)】/gm;
+
+  // 講師メモの中身を見て、実際の挙動に振り分ける（指示書21節の対応表）。
+  // ・「一呼吸置く」          → 2秒のpauseそのもの
+  // ・「ゆっくり」            → 次の一文だけ読み上げ速度を落とす
+  // ・「少し声を落とす」      → 次の一文だけ音量を落とす
+  // ・それ以外（例：「ここで受講生を見る」）→ 音声は変えず、画面表示だけの講師メモにする
+  var INSTRUCTOR_NOTE_RULES = {
+    '一呼吸置く': { type: 'pause', seconds: 2 },
+    'ゆっくり': { type: 'rate-note', rateDelta: -0.15 },
+    '少し声を落とす': { type: 'volume-note', volumeDelta: -0.2 }
+  };
+
+  function classifyInstructorNote(rawText) {
+    var text = rawText.trim();
+    var rule = INSTRUCTOR_NOTE_RULES[text];
+    if (rule && rule.type === 'pause') {
+      return { type: 'pause', seconds: rule.seconds };
+    }
+    if (rule && rule.type === 'rate-note') {
+      return { type: 'rate-note', label: text, rateDelta: rule.rateDelta };
+    }
+    if (rule && rule.type === 'volume-note') {
+      return { type: 'volume-note', label: text, volumeDelta: rule.volumeDelta };
+    }
+    return { type: 'note', label: text };
+  }
 
   function parseScript(text) {
     var result = [];
@@ -1003,6 +1047,8 @@
         result.push({ type: 'pause', seconds: parseFloat(match[1]) });
       } else if (match[2] !== undefined) {
         result.push({ type: 'section', title: match[2].trim() });
+      } else if (match[3] !== undefined) {
+        result.push(classifyInstructorNote(match[3]));
       }
       lastIndex = COMMAND_PATTERN.lastIndex;
     }
@@ -1430,6 +1476,17 @@
     vuStatus.textContent = !playing ? '待機中' : (isPaused ? '一時停止' : '読み上げ中');
   }
 
+  // 講師メモを画面に表示する。消すのは、対象の一文を読み終えたとき（onend/onerror）か、
+  // 音声を伴わない一般メモの場合は次のコマンドが始まる前まで（stopPlaybackで最終的に必ず消える）。
+  function showInstructorNote(label) {
+    instructorNoteLabel.textContent = '💬 ' + label;
+    instructorNoteLabel.hidden = false;
+  }
+  function clearInstructorNote() {
+    instructorNoteLabel.hidden = true;
+    instructorNoteLabel.textContent = '';
+  }
+
   function clearPauseTimer() {
     if (pauseTimerId !== null) {
       clearTimeout(pauseTimerId);
@@ -1455,6 +1512,14 @@
       return;
     }
 
+    if (cmd.type === 'note' || cmd.type === 'rate-note' || cmd.type === 'volume-note') {
+      showInstructorNote(cmd.label); // 講師メモは読み上げず、画面表示だけにする
+      if (cmd.type === 'rate-note') pendingRateDelta = cmd.rateDelta;
+      if (cmd.type === 'volume-note') pendingVolumeDelta = cmd.volumeDelta;
+      runCommand(idx + 1);
+      return;
+    }
+
     if (cmd.type === 'pause') {
       playState = 'waiting';
       pauseRemainingMs = cmd.seconds * 1000;
@@ -1475,13 +1540,20 @@
     } else {
       utter.lang = 'ja-JP';
     }
-    utter.rate = parseFloat(rateInput.value);
+    // 直前に【ゆっくり】【少し声を落とす】などの講師メモがあれば、この一文だけ速さ・音量を変える
+    utter.rate = Math.max(0.3, Math.min(2, parseFloat(rateInput.value) + pendingRateDelta));
     utter.pitch = parseFloat(pitchInput.value);
-    utter.volume = parseFloat(volumeInput.value);
+    utter.volume = Math.max(0, Math.min(1, parseFloat(volumeInput.value) + pendingVolumeDelta));
     utter.onend = function () {
+      pendingRateDelta = 0;
+      pendingVolumeDelta = 0;
+      clearInstructorNote();
       if (isPlaying && !isPaused) runCommand(idx + 1);
     };
     utter.onerror = function () {
+      pendingRateDelta = 0;
+      pendingVolumeDelta = 0;
+      clearInstructorNote();
       if (isPlaying && !isPaused) runCommand(idx + 1);
     };
     window.speechSynthesis.speak(utter);
@@ -1495,6 +1567,9 @@
     window.speechSynthesis.cancel();
     clearPauseTimer();
     exitSleepOverlay();
+    clearInstructorNote();
+    pendingRateDelta = 0;
+    pendingVolumeDelta = 0;
     isPaused = false;
     setPlayingUI(true);
     runCommand(startIndex || 0);
@@ -1533,6 +1608,9 @@
     window.speechSynthesis.cancel();
     clearPauseTimer();
     exitSleepOverlay();
+    clearInstructorNote();
+    pendingRateDelta = 0;
+    pendingVolumeDelta = 0;
     isPaused = false;
     var finished = reason === 'finished';
     playState = finished ? 'finished' : 'idle';
