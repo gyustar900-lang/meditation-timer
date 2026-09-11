@@ -245,6 +245,65 @@
   button.btn-outline:hover{ border-color:var(--accent); }
   button.btn-outline.danger{ color:var(--accent); border-color:var(--accent); }
 
+  /* ---------- lecturer mode (講師モード＝テレプロンプター) ---------- */
+  .lecturer-running{ display:flex; flex-direction:column; gap:16px; }
+  .lecturer-topbar{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    flex-wrap:wrap;
+    gap:8px 16px;
+  }
+  .lecturer-section-title{
+    font-family:"Shippori Mincho",serif;
+    font-size:15px;
+    color:var(--ink-soft);
+  }
+  .lecturer-time-group{
+    display:flex;
+    gap:14px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:12.5px;
+    color:var(--ink-soft);
+    font-variant-numeric:tabular-nums;
+  }
+  .lecturer-diff{ font-weight:700; color:var(--accent-2); }
+  .lecturer-diff.is-behind{ color:var(--accent); }
+  .lecturer-stage{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    box-shadow:var(--shadow);
+    padding:40px 32px;
+    display:flex;
+    flex-direction:column;
+    gap:20px;
+    min-height:220px;
+    justify-content:center;
+  }
+  .lecturer-current{
+    margin:0;
+    font-size:clamp(22px,4vw,30px);
+    line-height:1.7;
+    text-align:center;
+    color:var(--ink);
+  }
+  .lecturer-next{
+    margin:0;
+    font-size:15px;
+    line-height:1.8;
+    text-align:center;
+    color:var(--ink-soft);
+    opacity:.6;
+  }
+  .lecturer-note{ align-self:center; }
+  .lecturer-controls{
+    display:flex;
+    justify-content:center;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+
   /* ---------- script save/load (原稿の保存・呼び出し) ---------- */
   .script-field-grow{ flex:1 1 220px; }
   input.script-title-input{
@@ -703,6 +762,7 @@
     <button type="button" class="tab-btn is-selected" data-tab="guided" role="tab" aria-selected="true">誘導瞑想</button>
     <button type="button" class="tab-btn" data-tab="timer" role="tab" aria-selected="false">タイマー瞑想</button>
     <button type="button" class="tab-btn" data-tab="list" role="tab" aria-selected="false">原稿一覧</button>
+    <button type="button" class="tab-btn" data-tab="lecturer" role="tab" aria-selected="false">講師モード</button>
   </div>
 
   <div id="guidedSection">
@@ -899,6 +959,43 @@
       <div id="scriptListContainer" class="script-list-container"></div>
     </div>
   </div>
+
+  <!-- ==== lecturerSection（講師モード＝テレプロンプター。TTSでは読み上げない） ==== -->
+  <div id="lecturerSection" hidden>
+    <div id="lecturerSetup" class="timer-panel">
+      <span class="manuscript-label">講師モードの準備</span>
+      <p class="timer-instruction">「誘導瞑想」タブに入力した原稿を、大きな文字で表示します。読み上げは行わず、自分のペースで「次へ」を押しながら進めます。</p>
+      <div class="timer-custom-row">
+        <label class="field-label" for="lecturerPlannedMinutes">予定時間（分）</label>
+        <input type="number" id="lecturerPlannedMinutes" min="1" max="600" step="1">
+      </div>
+      <button type="button" class="play-btn-wide" id="lecturerStartBtn">講師モードを開始</button>
+    </div>
+
+    <div id="lecturerRunning" class="lecturer-running" hidden>
+      <div class="lecturer-topbar">
+        <span id="lecturerSectionTitle" class="lecturer-section-title">（セクションなし）</span>
+        <div class="lecturer-time-group">
+          <span id="lecturerElapsed" class="lecturer-time">経過 0:00</span>
+          <span id="lecturerPlanned" class="lecturer-time">予定 0:00</span>
+          <span id="lecturerDiff" class="lecturer-diff">±0:00</span>
+        </div>
+      </div>
+
+      <div class="lecturer-stage">
+        <p id="lecturerCurrentText" class="lecturer-current"></p>
+        <p id="lecturerNextText" class="lecturer-next"></p>
+      </div>
+
+      <div id="lecturerNoteLabel" class="instructor-note lecturer-note" hidden></div>
+
+      <div class="lecturer-controls">
+        <button type="button" class="btn-outline" id="lecturerPrevBtn">← 前へ</button>
+        <button type="button" class="play-btn-wide" id="lecturerNextBtn">次へ →</button>
+        <button type="button" class="btn-outline danger" id="lecturerEndBtn">終了</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!--
@@ -1017,7 +1114,8 @@
     var text = rawText.trim();
     var rule = INSTRUCTOR_NOTE_RULES[text];
     if (rule && rule.type === 'pause') {
-      return { type: 'pause', seconds: rule.seconds };
+      // labelは再生エンジンでは使わないが、講師モードの下部表示のために残しておく
+      return { type: 'pause', seconds: rule.seconds, label: text };
     }
     if (rule && rule.type === 'rate-note') {
       return { type: 'rate-note', label: text, rateDelta: rule.rateDelta };
@@ -1971,6 +2069,7 @@
   // ==== タブ切り替え（誘導瞑想 / タイマー瞑想） ====
   var guidedSection = document.getElementById('guidedSection');
   var timerSection = document.getElementById('timerSection');
+  var lecturerSection = document.getElementById('lecturerSection');
   var tabButtons = document.querySelectorAll('.tab-btn');
 
   function switchTab(tab) {
@@ -1980,11 +2079,17 @@
 
     if (isPlaying) stopPlayback('idle'); // 誘導瞑想が再生中なら、タブを離れる前に止める
     timerPause();                        // タイマーが動作中なら、タブを離れる前に一時停止にする
+    if (lecturerTimerId) { clearInterval(lecturerTimerId); lecturerTimerId = null; } // 講師モードの時計は裏で回さない
 
     guidedSection.hidden = tab !== 'guided';
     timerSection.hidden = tab !== 'timer';
     listSection.hidden = tab !== 'list';
+    lecturerSection.hidden = tab !== 'lecturer';
     if (tab === 'list') renderScriptList();
+    if (tab === 'lecturer' && lecturerStartTime && lecturerRunning.hidden === false) {
+      lecturerTimerId = setInterval(updateLecturerTimeDisplay, 1000);
+      updateLecturerTimeDisplay();
+    }
 
     tabButtons.forEach(function (btn) {
       var selected = btn.dataset.tab === tab;
@@ -2126,6 +2231,152 @@
 
   window.addEventListener('beforeunload', function () {
     clearInterval(timerIntervalId);
+  });
+
+  // ==== 講師モード（テレプロンプター。TTSでは読み上げない） ====
+  var lecturerSetup = document.getElementById('lecturerSetup');
+  var lecturerRunning = document.getElementById('lecturerRunning');
+  var lecturerPlannedMinutes = document.getElementById('lecturerPlannedMinutes');
+  var lecturerStartBtn = document.getElementById('lecturerStartBtn');
+  var lecturerSectionTitleEl = document.getElementById('lecturerSectionTitle');
+  var lecturerElapsedEl = document.getElementById('lecturerElapsed');
+  var lecturerPlannedEl = document.getElementById('lecturerPlanned');
+  var lecturerDiffEl = document.getElementById('lecturerDiff');
+  var lecturerCurrentTextEl = document.getElementById('lecturerCurrentText');
+  var lecturerNextTextEl = document.getElementById('lecturerNextText');
+  var lecturerNoteLabelEl = document.getElementById('lecturerNoteLabel');
+  var lecturerPrevBtn = document.getElementById('lecturerPrevBtn');
+  var lecturerNextBtn = document.getElementById('lecturerNextBtn');
+  var lecturerEndBtn = document.getElementById('lecturerEndBtn');
+
+  var lecturerCommands = [];
+  var lecturerIndex = 0;
+  var lecturerStartTime = null;   // Date.now()。講師モード開始からの経過時間の基準
+  var lecturerTimerId = null;
+  var lecturerPlannedTotalSeconds = 0;
+
+  function estimateSecondsForText(text, rate) {
+    var count = text.replace(/\s/g, '').length;
+    return Math.round((count * 0.16) / (rate || 1));
+  }
+
+  function formatMMSS(totalSeconds) {
+    var s = Math.max(0, Math.round(totalSeconds));
+    var m = Math.floor(s / 60);
+    var ss = s % 60;
+    return m + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+
+  function findSpeakIndexFrom(cmds, fromIdx) {
+    for (var i = fromIdx; i < cmds.length; i++) {
+      if (cmds[i].type === 'speak') return i;
+    }
+    return -1;
+  }
+
+  function findSpeakIndexStep(cmds, fromIdx, direction) {
+    var i = fromIdx + direction;
+    while (i >= 0 && i < cmds.length) {
+      if (cmds[i].type === 'speak') return i;
+      i += direction;
+    }
+    return -1;
+  }
+
+  // 本文（speak）の文字数を基準に、「今の場所まで進んでいたら、予定時間のうち何秒経っているはずか」を求める。
+  // 節ごとの予定時刻までは管理していないので、原稿全体の予定時間を文字数で按分する簡易計算にしている。
+  function computeExpectedSecondsAtIndex(cmds, idx, totalPlannedSeconds) {
+    var totalChars = 0;
+    var charsUpToIdx = 0;
+    cmds.forEach(function (cmd, i) {
+      if (cmd.type !== 'speak') return;
+      totalChars += cmd.text.length;
+      if (i <= idx) charsUpToIdx += cmd.text.length;
+    });
+    if (totalChars === 0) return 0;
+    return totalPlannedSeconds * (charsUpToIdx / totalChars);
+  }
+
+  function updateLecturerTimeDisplay() {
+    if (!lecturerStartTime) return;
+    var elapsedSec = (Date.now() - lecturerStartTime) / 1000;
+    var expectedSec = computeExpectedSecondsAtIndex(lecturerCommands, lecturerIndex, lecturerPlannedTotalSeconds);
+    var diffSec = elapsedSec - expectedSec;
+    lecturerElapsedEl.textContent = '経過 ' + formatMMSS(elapsedSec);
+    lecturerPlannedEl.textContent = '予定 ' + formatMMSS(expectedSec);
+    lecturerDiffEl.textContent = (diffSec >= 0 ? '+' : '−') + formatMMSS(Math.abs(diffSec));
+    lecturerDiffEl.classList.toggle('is-behind', diffSec > 0);
+  }
+
+  function lecturerRender() {
+    if (!lecturerCommands.length) return;
+    // 0から現在地までたどり、直近のセクション名・講師メモを求める
+    var sectionTitle = '';
+    var noteLabel = '';
+    for (var i = 0; i <= lecturerIndex; i++) {
+      var c = lecturerCommands[i];
+      if (c.type === 'section') { sectionTitle = c.title; noteLabel = ''; }
+      else if (c.type === 'note' || c.type === 'rate-note' || c.type === 'volume-note') noteLabel = c.label;
+      else if (c.type === 'pause' && c.label) noteLabel = c.label;
+      else if (c.type === 'speak') noteLabel = '';
+    }
+    lecturerSectionTitleEl.textContent = sectionTitle || '（セクションなし）';
+    lecturerCurrentTextEl.textContent = lecturerCommands[lecturerIndex].text;
+
+    var nextIdx = findSpeakIndexStep(lecturerCommands, lecturerIndex, 1);
+    lecturerNextTextEl.textContent = nextIdx !== -1 ? lecturerCommands[nextIdx].text : '（最後です）';
+
+    if (noteLabel) {
+      lecturerNoteLabelEl.textContent = '💬 ' + noteLabel;
+      lecturerNoteLabelEl.hidden = false;
+    } else {
+      lecturerNoteLabelEl.hidden = true;
+    }
+
+    lecturerPrevBtn.disabled = findSpeakIndexStep(lecturerCommands, lecturerIndex, -1) === -1;
+    lecturerNextBtn.disabled = nextIdx === -1;
+    updateLecturerTimeDisplay();
+  }
+
+  function refreshLecturerPlannedPlaceholder() {
+    if (!lecturerSetup.hidden) {
+      var seconds = estimateSecondsForText(textInput.value, parseFloat(rateInput.value) || 1);
+      lecturerPlannedMinutes.value = Math.max(1, Math.round(seconds / 60));
+    }
+  }
+  refreshLecturerPlannedPlaceholder();
+  textInput.addEventListener('input', refreshLecturerPlannedPlaceholder);
+
+  lecturerStartBtn.addEventListener('click', function () {
+    lecturerCommands = parseScript(textInput.value);
+    var firstSpeak = findSpeakIndexFrom(lecturerCommands, 0);
+    if (firstSpeak === -1) return; // 読み上げる本文が原稿に1つもない
+    lecturerIndex = firstSpeak;
+    lecturerPlannedTotalSeconds = (parseFloat(lecturerPlannedMinutes.value) || 1) * 60;
+    lecturerStartTime = Date.now();
+    lecturerSetup.hidden = true;
+    lecturerRunning.hidden = false;
+    lecturerRender();
+    clearInterval(lecturerTimerId);
+    lecturerTimerId = setInterval(updateLecturerTimeDisplay, 1000);
+  });
+
+  lecturerNextBtn.addEventListener('click', function () {
+    var nextIdx = findSpeakIndexStep(lecturerCommands, lecturerIndex, 1);
+    if (nextIdx !== -1) { lecturerIndex = nextIdx; lecturerRender(); }
+  });
+
+  lecturerPrevBtn.addEventListener('click', function () {
+    var prevIdx = findSpeakIndexStep(lecturerCommands, lecturerIndex, -1);
+    if (prevIdx !== -1) { lecturerIndex = prevIdx; lecturerRender(); }
+  });
+
+  lecturerEndBtn.addEventListener('click', function () {
+    clearInterval(lecturerTimerId);
+    lecturerTimerId = null;
+    lecturerStartTime = null;
+    lecturerRunning.hidden = true;
+    lecturerSetup.hidden = false;
   });
 })();
 </script>
