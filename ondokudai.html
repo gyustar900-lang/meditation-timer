@@ -1,0 +1,2611 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found]){display:none!important}</style></head><body>
+<title>音読台</title>
+<!--
+  音読台（周天プレイヤー Phase1）
+  変更点（設計・実装指示書 STEP1〜6対応）:
+    - [間：N秒] を認識するスクリプトパーサーを追加（parseScript）
+    - 再生状態を idle / speaking / waiting / paused / finished に整理
+    - 「間」の途中で一時停止しても残り秒数を保持して再開できるようにした
+  元のUI・文単位読み上げ・声選択・速度調整・localStorage保存は変更していない。
+-->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#C1432B">
+<link rel="icon" href="icon-512.png">
+<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<!-- ==== スタイル（CSS） ==== -->
+<style>
+  :root{
+    --bg:#E5E1D3;
+    --surface:#FBFAF5;
+    --surface-2:#EFEBDC;
+    --line:#D8D2BE;
+    --ink:#23211B;
+    --ink-soft:#6E6A5A;
+    --accent:#C1432B;
+    --accent-ink:#FFF7F0;
+    --accent-2:#C98A2E;
+    --shadow: 0 1px 0 rgba(35,33,27,.05), 0 12px 28px -18px rgba(35,33,27,.35);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#1B1913;
+      --surface:#242019;
+      --surface-2:#2B261D;
+      --line:#3A3427;
+      --ink:#EFE9D8;
+      --ink-soft:#A79E88;
+      --accent:#E2583D;
+      --accent-ink:#1B1913;
+      --accent-2:#E3AE5C;
+      --shadow: 0 1px 0 rgba(0,0,0,.2), 0 20px 40px -24px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#1B1913;
+    --surface:#242019;
+    --surface-2:#2B261D;
+    --line:#3A3427;
+    --ink:#EFE9D8;
+    --ink-soft:#A79E88;
+    --accent:#E2583D;
+    --accent-ink:#1B1913;
+    --accent-2:#E3AE5C;
+    --shadow: 0 1px 0 rgba(0,0,0,.2), 0 20px 40px -24px rgba(0,0,0,.7);
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .page{
+    max-width:760px;
+    margin:0 auto;
+    padding:56px 24px 80px;
+    display:flex;
+    flex-direction:column;
+    gap:28px;
+  }
+
+  /* ---------- header ---------- */
+  header{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .eyebrow{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.14em;
+    color:var(--accent);
+    text-transform:uppercase;
+  }
+  .eyebrow svg{ width:16px; height:14px; display:block; }
+  h1{
+    margin:0;
+    font-family:"Shippori Mincho",serif;
+    font-weight:800;
+    font-size:clamp(32px,6vw,44px);
+    letter-spacing:.02em;
+    text-wrap:balance;
+  }
+  header p{
+    margin:0;
+    max-width:56ch;
+    color:var(--ink-soft);
+    font-size:15px;
+    line-height:1.7;
+  }
+
+  /* ---------- preset dock ---------- */
+  .preset-dock{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:10px;
+  }
+  .preset-dock-label{ margin-right:2px; }
+  button.preset-btn{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:7px 16px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:13px;
+    color:var(--ink);
+    cursor:pointer;
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease;
+  }
+  button.preset-btn:hover{ border-color:var(--accent); }
+  button.preset-btn.is-selected{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+  .dim-toggle-field{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    margin-left:auto;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    color:var(--ink-soft);
+    cursor:pointer;
+  }
+  .dim-toggle-field input{ accent-color:var(--accent); cursor:pointer; }
+
+  /* ---------- tabs (誘導瞑想 / タイマー瞑想) ---------- */
+  .tab-dock{
+    display:flex;
+    gap:10px;
+  }
+  button.tab-btn{
+    flex:1;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:12px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:14px;
+    font-weight:700;
+    color:var(--ink-soft);
+    cursor:pointer;
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease;
+  }
+  button.tab-btn:hover{ border-color:var(--accent); }
+  button.tab-btn.is-selected{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+
+  /* ---------- timer (タイマー瞑想) ---------- */
+  .timer-panel{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    box-shadow:var(--shadow);
+    padding:32px 28px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:16px;
+    text-align:center;
+  }
+  .timer-instruction{ margin:0; color:var(--ink-soft); font-size:14px; }
+  .timer-minute-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(72px, 1fr));
+    gap:8px;
+    width:100%;
+  }
+  button.timer-minute-btn.is-selected{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+  .timer-custom-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex-wrap:wrap;
+    justify-content:center;
+  }
+  .timer-custom-row input[type="number"]{
+    width:100px;
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 10px;
+    font-size:13.5px;
+    color:var(--ink);
+  }
+  button.play-btn-wide{
+    background:var(--accent);
+    color:var(--accent-ink);
+    border:1px solid var(--accent);
+    border-radius:999px;
+    padding:12px 30px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:14px;
+    font-weight:700;
+    cursor:pointer;
+    transition:filter .15s ease;
+  }
+  button.play-btn-wide:hover{ filter:brightness(1.06); }
+  button.play-btn-wide:disabled{ opacity:.4; cursor:not-allowed; }
+  .timer-display{
+    font-family:"JetBrains Mono",monospace;
+    font-size:52px;
+    font-variant-numeric:tabular-nums;
+    color:var(--ink);
+    letter-spacing:.02em;
+  }
+  .timer-controls-row{
+    display:flex;
+    gap:12px;
+    flex-wrap:wrap;
+    justify-content:center;
+  }
+  button.btn-outline{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:10px 22px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:13.5px;
+    color:var(--ink);
+    cursor:pointer;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  button.btn-outline:hover{ border-color:var(--accent); }
+  button.btn-outline.danger{ color:var(--accent); border-color:var(--accent); }
+
+  /* ---------- lecturer mode (講師モード＝テレプロンプター) ---------- */
+  .lecturer-running{ display:flex; flex-direction:column; gap:16px; }
+  .lecturer-topbar{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    flex-wrap:wrap;
+    gap:8px 16px;
+  }
+  .lecturer-section-title{
+    font-family:"Shippori Mincho",serif;
+    font-size:15px;
+    color:var(--ink-soft);
+  }
+  .lecturer-time-group{
+    display:flex;
+    gap:14px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:12.5px;
+    color:var(--ink-soft);
+    font-variant-numeric:tabular-nums;
+  }
+  .lecturer-diff{ font-weight:700; color:var(--accent-2); }
+  .lecturer-diff.is-behind{ color:var(--accent); }
+  .lecturer-stage{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    box-shadow:var(--shadow);
+    padding:40px 32px;
+    display:flex;
+    flex-direction:column;
+    gap:20px;
+    min-height:220px;
+    justify-content:center;
+  }
+  .lecturer-current{
+    margin:0;
+    font-size:clamp(22px,4vw,30px);
+    line-height:1.7;
+    text-align:center;
+    color:var(--ink);
+  }
+  .lecturer-next{
+    margin:0;
+    font-size:15px;
+    line-height:1.8;
+    text-align:center;
+    color:var(--ink-soft);
+    opacity:.6;
+  }
+  .lecturer-note{ align-self:center; }
+  .lecturer-controls{
+    display:flex;
+    justify-content:center;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+
+  /* ---------- script save/load (原稿の保存・呼び出し) ---------- */
+  .script-field-grow{ flex:1 1 220px; }
+  input.script-title-input{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 10px;
+    font-size:13.5px;
+    color:var(--ink);
+    width:100%;
+  }
+  .script-btn-row{ display:flex; gap:8px; }
+  .script-status{
+    margin:-14px 0 0;
+    min-height:1.4em;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11.5px;
+    color:var(--ink-soft);
+  }
+
+  /* ---------- term dictionary (専門用語辞書) ---------- */
+  details.dict-panel{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:8px;
+    box-shadow:var(--shadow);
+    padding:16px 20px;
+  }
+  details.dict-panel summary{
+    cursor:pointer;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-weight:700;
+    font-size:14px;
+    color:var(--ink);
+  }
+  details.dict-panel[open] summary{ margin-bottom:12px; }
+  .dict-note{ text-align:left; margin-bottom:14px; }
+  .dict-list{ display:flex; flex-direction:column; gap:0; margin-bottom:14px; }
+  .dict-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:7px 0;
+    border-top:1px solid var(--line);
+  }
+  .dict-list .dict-row:first-child{ border-top:none; }
+  .dict-term{ font-weight:700; color:var(--ink); min-width:84px; font-size:13.5px; }
+  .dict-reading{ color:var(--ink-soft); font-family:"JetBrains Mono",monospace; font-size:12.5px; flex:1; }
+  .dict-row button{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:3px 11px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:11.5px;
+    color:var(--ink);
+    cursor:pointer;
+  }
+  .dict-row button:hover{ border-color:var(--accent); }
+  .dict-add-row{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-bottom:10px;
+  }
+  .dict-add-row input{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 10px;
+    font-size:13px;
+    color:var(--ink);
+    flex:1;
+    min-width:120px;
+  }
+
+  /* ---------- script list (原稿一覧) ---------- */
+  .script-list-empty{ margin:0; color:var(--ink-soft); font-size:13.5px; padding:8px 0 4px; }
+  .script-list-group{ margin-top:20px; }
+  .script-list-group:first-child{ margin-top:4px; }
+  .script-list-group-title{
+    margin:0 0 6px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--accent-2);
+  }
+  .script-list-row{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:10px 16px;
+    padding:12px 0;
+    border-top:1px solid var(--line);
+  }
+  .script-list-group .script-list-row:first-of-type{ border-top:none; }
+  .script-list-info{ flex:1 1 200px; min-width:0; }
+  .script-list-title{
+    font-size:14px;
+    color:var(--ink);
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .script-list-meta{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11.5px;
+    color:var(--ink-soft);
+    margin-top:2px;
+    font-variant-numeric:tabular-nums;
+  }
+  .script-list-actions{ display:flex; gap:6px; flex-wrap:wrap; flex:0 0 auto; }
+  .script-list-actions button{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:5px 13px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:12px;
+    color:var(--ink);
+    cursor:pointer;
+  }
+  .script-list-actions button:hover{ border-color:var(--accent); }
+  .script-list-actions button.primary{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+  .script-list-actions button.danger{ color:var(--accent); }
+
+  /* ---------- sleep overlay (睡眠モードの暗転画面) ---------- */
+  /* テーマ(ライト/ダーク)に関わらず常にほぼ黒にするため、ページのトークンとは別の固定色を使う */
+  .sleep-overlay{
+    position:fixed;
+    inset:0;
+    z-index:100;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+    padding:24px;
+    text-align:center;
+    background:#05070A;
+    color:#D8DEE4;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity 1.4s ease;
+  }
+  .sleep-overlay.is-active{
+    opacity:1;
+    pointer-events:auto;
+  }
+  .sleep-breath{
+    width:64px; height:64px;
+    border-radius:50%;
+    background:radial-gradient(circle, rgba(211,162,99,.55), rgba(211,162,99,0) 70%);
+    animation:sleep-breathe 6s ease-in-out infinite;
+  }
+  @keyframes sleep-breathe{
+    0%, 100%{ transform:scale(.85); opacity:.55; }
+    50%{ transform:scale(1.15); opacity:1; }
+  }
+  .sleep-label{
+    margin:0;
+    font-family:"Shippori Mincho",serif;
+    font-size:15px;
+    letter-spacing:.08em;
+    color:#B9C0C7;
+  }
+  .sleep-hint{
+    margin:0;
+    font-family:"JetBrains Mono",monospace;
+    font-size:10.5px;
+    letter-spacing:.06em;
+    color:#5C646C;
+    opacity:0;
+    transition:opacity .6s ease .6s;
+  }
+  .sleep-overlay.is-active .sleep-hint{ opacity:1; }
+  .sleep-overlay.is-controls-visible .sleep-hint{ opacity:0; transition-delay:0s; }
+
+  .sleep-controls{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:14px;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .4s ease;
+  }
+  .sleep-overlay.is-controls-visible .sleep-controls{
+    opacity:1;
+    pointer-events:auto;
+  }
+  .sleep-controls-row{ display:flex; gap:12px; }
+  button.sleep-btn{
+    background:transparent;
+    border:1px solid #33393F;
+    color:#D8DEE4;
+    border-radius:999px;
+    padding:9px 20px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:13px;
+    cursor:pointer;
+  }
+  button.sleep-btn:hover{ border-color:#5C646C; }
+  button.sleep-btn.danger{ color:#D99A83; border-color:#4A2E24; }
+  .sleep-volume-label{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    color:#8A9198;
+  }
+  .sleep-end-confirm{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+    font-size:13px;
+    color:#D8DEE4;
+  }
+  .sleep-end-confirm-row{ display:flex; gap:10px; }
+
+  @media (prefers-reduced-motion: reduce){
+    .sleep-breath{ animation:none; }
+    .sleep-overlay, .sleep-hint, .sleep-controls{ transition:none; }
+  }
+
+  /* ---------- manuscript card ---------- */
+  .manuscript{
+    position:relative;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    box-shadow:var(--shadow);
+    padding:28px 30px;
+  }
+  .manuscript-label{
+    position:absolute;
+    top:-11px;
+    left:24px;
+    background:var(--bg);
+    padding:0 8px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.1em;
+    color:var(--ink-soft);
+  }
+
+  textarea{
+    width:100%;
+    min-height:260px;
+    resize:vertical;
+    border:none;
+    outline:none;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        transparent, transparent 31px,
+        var(--line) 31px, var(--line) 32px
+      );
+    background-attachment:local;
+    line-height:32px;
+    font-family:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",sans-serif;
+    font-size:16.5px;
+    color:var(--ink);
+    padding:2px 2px 0;
+  }
+  textarea::placeholder{ color:var(--ink-soft); }
+  textarea:disabled{ color:var(--ink-soft); }
+
+  .reading-view{
+    display:none;
+    min-height:260px;
+    line-height:32px;
+    font-size:16.5px;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        transparent, transparent 31px,
+        var(--line) 31px, var(--line) 32px
+      );
+    padding:2px 2px 0;
+  }
+  .reading-view.is-active{ display:block; }
+  .reading-view .sentence{
+    transition:background-color .25s ease, color .25s ease;
+    border-radius:3px;
+  }
+  .reading-view .sentence.is-current{
+    background:color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .reading-view .word.is-current{
+    background:var(--accent);
+    color:var(--accent-ink);
+    padding:0 1px;
+    border-radius:2px;
+  }
+
+  .instructor-note{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    margin-top:10px;
+    padding:6px 13px;
+    border-radius:999px;
+    background:color-mix(in srgb, var(--accent-2) 16%, transparent);
+    color:var(--accent-2);
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:12.5px;
+  }
+  .meta-row{
+    display:flex;
+    justify-content:space-between;
+    margin-top:14px;
+    padding-top:12px;
+    border-top:1px solid var(--line);
+    font-family:"JetBrains Mono",monospace;
+    font-size:12px;
+    color:var(--ink-soft);
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* ---------- section nav (## 見出しで区切られたセクションへの移動) ---------- */
+  .section-nav-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-top:12px;
+  }
+  button.section-nav-btn{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:6px 14px;
+    font-family:"Zen Kaku Gothic New",sans-serif;
+    font-size:12.5px;
+    color:var(--ink);
+    cursor:pointer;
+    transition:border-color .15s ease, background-color .15s ease, color .15s ease;
+  }
+  button.section-nav-btn:hover{ border-color:var(--accent); }
+  button.section-nav-btn.is-current{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+
+  /* ---------- control dock ---------- */
+  .dock{
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:18px 20px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:20px;
+  }
+
+  .transport{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  button.play{
+    width:52px; height:52px;
+    border-radius:50%;
+    border:1px solid var(--accent);
+    background:var(--accent);
+    color:var(--accent-ink);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex:none;
+    transition:transform .15s ease, filter .15s ease;
+  }
+  button.play:hover{ filter:brightness(1.06); }
+  button.play:active{ transform:scale(.96); }
+  button.play svg{ width:18px; height:18px; }
+
+  button.stop{
+    width:40px; height:40px;
+    border-radius:50%;
+    border:1px solid var(--line);
+    background:transparent;
+    color:var(--ink-soft);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex:none;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  button.stop:hover{ border-color:var(--ink-soft); color:var(--ink); }
+  button.stop svg{ width:14px; height:14px; }
+
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  button:focus-visible, select:focus-visible, input:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+
+  .field{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    min-width:0;
+  }
+  .field-label{
+    font-family:"JetBrains Mono",monospace;
+    font-size:10.5px;
+    letter-spacing:.08em;
+    color:var(--ink-soft);
+    text-transform:uppercase;
+  }
+
+  select{
+    appearance:none;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:7px 30px 7px 10px;
+    font-size:13.5px;
+    color:var(--ink);
+    max-width:200px;
+    text-overflow:ellipsis;
+    background-image:linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%), linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+    background-position: calc(100% - 16px) center, calc(100% - 11px) center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat:no-repeat;
+    cursor:pointer;
+  }
+
+  .rate-field{ width:150px; }
+  .rate-track-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  input[type="range"]{
+    flex:1;
+    accent-color:var(--accent);
+    height:20px;
+  }
+  .rate-value{
+    font-family:"JetBrains Mono",monospace;
+    font-size:12.5px;
+    color:var(--ink);
+    width:34px;
+    text-align:right;
+    font-variant-numeric:tabular-nums;
+  }
+  .rate-ticks{
+    display:flex;
+    justify-content:space-between;
+    font-size:10px;
+    color:var(--ink-soft);
+    margin-top:1px;
+  }
+
+  .vu{
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  canvas.vu-canvas{ display:block; width:64px; height:26px; }
+  .vu-status{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    color:var(--ink-soft);
+    min-width:64px;
+  }
+
+  .notice{
+    display:none;
+    font-size:13px;
+    color:var(--ink-soft);
+    border:1px dashed var(--line);
+    border-radius:6px;
+    padding:12px 14px;
+    line-height:1.6;
+  }
+  .notice.is-visible{ display:block; }
+  .voice-error-notice{
+    font-size:13px;
+    color:var(--accent);
+    border:1px dashed var(--accent);
+    border-radius:6px;
+    padding:10px 14px;
+    line-height:1.6;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    button.play, .reading-view .sentence{ transition:none; }
+  }
+
+  @media (max-width:520px){
+    .page{ padding:40px 16px 60px; }
+    .dock{ padding:16px; }
+    .vu{ margin-left:0; width:100%; justify-content:flex-start; }
+  }
+</style>
+
+<!-- ==== 画面構造（HTML） ==== -->
+<div class="page">
+  <header>
+    <div class="eyebrow">
+      <svg viewBox="0 0 16 14" fill="none"><rect x="0" y="5" width="2" height="4" rx="1" fill="currentColor"/><rect x="4" y="2" width="2" height="10" rx="1" fill="currentColor"/><rect x="8" y="0" width="2" height="14" rx="1" fill="currentColor"/><rect x="12" y="3" width="2" height="8" rx="1" fill="currentColor"/></svg>
+      TEXT TO SPEECH
+    </div>
+    <h1>音読台</h1>
+    <p>文章を打ち込むと、ちょうどよい速さと間で読み上げます。<code>[間：5秒]</code>で指定秒数だけ黙って待ち、<code>## 見出し</code>で区切るとセクションごとに移動でき、<code>【ゆっくり】</code>のような講師メモは読み上げずに指示として扱います。</p>
+  </header>
+
+  <div class="tab-dock" role="tablist" aria-label="モード切り替え">
+    <button type="button" class="tab-btn is-selected" data-tab="guided" role="tab" aria-selected="true">誘導瞑想</button>
+    <button type="button" class="tab-btn" data-tab="timer" role="tab" aria-selected="false">タイマー瞑想</button>
+    <button type="button" class="tab-btn" data-tab="list" role="tab" aria-selected="false">原稿一覧</button>
+    <button type="button" class="tab-btn" data-tab="lecturer" role="tab" aria-selected="false">講師モード</button>
+  </div>
+
+  <div id="guidedSection">
+  <div class="preset-dock" role="group" aria-label="読み上げモードのプリセット">
+    <span class="field-label preset-dock-label">モード</span>
+    <button type="button" class="preset-btn" data-preset="normal">通常音読</button>
+    <button type="button" class="preset-btn" data-preset="lecture">講座</button>
+    <button type="button" class="preset-btn" data-preset="wish">願望実現</button>
+    <button type="button" class="preset-btn" data-preset="sleep">睡眠</button>
+    <label class="dim-toggle-field" for="dimToggle">
+      <input type="checkbox" id="dimToggle" checked>
+      睡眠モードで画面を暗くする
+    </label>
+  </div>
+
+  <div class="manuscript">
+    <span class="manuscript-label">原稿</span>
+    <textarea id="textInput" spellcheck="false" placeholder="ここに文章を入力してください…">## 導入
+【ここで受講生を見る】
+今から行うのは、静かに呼吸を整える練習です。
+[間：3秒]
+
+## 呼吸を整える
+息を吐きます。
+[間：5秒]
+身体が静かになります。
+丹田に意識を向けます。
+[間：3秒]
+【ゆっくり】
+もう一度、ゆっくりと息を吐きます。</textarea>
+    <div id="readingView" class="reading-view" aria-live="polite"></div>
+    <div id="instructorNoteLabel" class="instructor-note" hidden></div>
+    <div class="meta-row">
+      <span id="charCount">0 文字</span>
+      <span id="estTime">推定 0:00</span>
+    </div>
+    <div id="sectionNavRow" class="section-nav-row" hidden></div>
+  </div>
+
+  <div class="dock script-dock">
+    <div class="field script-field-grow">
+      <label class="field-label" for="scriptTitleInput">タイトル</label>
+      <input type="text" id="scriptTitleInput" class="script-title-input" placeholder="例：眠りに落ちる周天法">
+    </div>
+    <div class="field">
+      <label class="field-label" for="scriptCategorySelect">カテゴリ</label>
+      <select id="scriptCategorySelect">
+        <option value="睡眠誘導">睡眠誘導</option>
+        <option value="仙道瞑想">仙道瞑想</option>
+        <option value="願望実現">願望実現</option>
+        <option value="周天法講座">周天法講座</option>
+        <option value="講義練習">講義練習</option>
+        <option value="自作" selected>自作</option>
+      </select>
+    </div>
+    <div class="field">
+      <span class="field-label">&nbsp;</span>
+      <div class="script-btn-row">
+        <button type="button" class="btn-outline" id="scriptNewBtn">新規</button>
+        <button type="button" class="play-btn-wide" id="scriptSaveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dock script-dock">
+    <div class="field script-field-grow">
+      <label class="field-label" for="savedScriptSelect">保存した原稿</label>
+      <select id="savedScriptSelect"><option value="">（まだ保存された原稿はありません）</option></select>
+    </div>
+    <div class="field">
+      <span class="field-label">&nbsp;</span>
+      <div class="script-btn-row">
+        <button type="button" class="btn-outline" id="scriptLoadBtn">呼び出す</button>
+        <button type="button" class="btn-outline danger" id="scriptDeleteBtn">削除</button>
+      </div>
+    </div>
+  </div>
+  <p class="script-status" id="scriptStatus" aria-live="polite"></p>
+
+  <details class="dict-panel">
+    <summary>専門用語辞書（読み仮名の自動変換）</summary>
+    <p class="timer-instruction dict-note">ここに登録した用語は、原稿にそのまま書いても自動で読み仮名に変換されます。原稿の中で <code>丹田{たんでん}</code> のように書けば、その場だけ好きな読みを個別に指定できます（画面には常に元の表記が出ます）。</p>
+    <div id="dictList" class="dict-list"></div>
+    <div class="dict-add-row">
+      <input type="text" id="dictTermInput" placeholder="用語（例：泥丸）">
+      <input type="text" id="dictReadingInput" placeholder="読み（例：でいがん）">
+      <button type="button" class="btn-outline" id="dictAddBtn">追加</button>
+    </div>
+    <button type="button" class="btn-outline danger" id="dictResetBtn">初期状態に戻す</button>
+  </details>
+
+  <div id="unsupportedNotice" class="notice">
+    お使いのブラウザは音声読み上げ（Web Speech API）に対応していないようです。最新の Chrome・Edge・Safari でお試しください。
+  </div>
+  <div id="voiceErrorNotice" class="voice-error-notice" hidden>
+    この端末では現在この音声を利用できません。別の音声を選択してください。
+  </div>
+
+  <div class="dock">
+    <div class="transport">
+      <button type="button" class="play" id="playBtn" aria-label="再生">
+        <svg id="playIcon" viewBox="0 0 20 20" fill="none"><path d="M6 4L16 10L6 16V4Z" fill="currentColor"/></svg>
+      </button>
+      <button type="button" class="stop" id="stopBtn" aria-label="停止" disabled>
+        <svg viewBox="0 0 14 14" fill="none"><rect x="0" y="0" width="14" height="14" rx="1.5" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="voiceSelect">声</label>
+      <select id="voiceSelect"><option>音声を読み込み中…</option></select>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="endSoundSelect">終了音</label>
+      <select id="endSoundSelect">
+        <option value="none">なし</option>
+        <option value="beep">電子音</option>
+        <option value="bell">鐘</option>
+        <option value="soft-bell" selected>柔らかいベル</option>
+      </select>
+    </div>
+
+    <div class="field rate-field">
+      <label class="field-label" for="rateInput">速さ</label>
+      <div class="rate-track-row">
+        <input type="range" id="rateInput" min="0.5" max="2" step="0.1" value="1">
+        <span class="rate-value" id="rateValue">1.0×</span>
+      </div>
+      <div class="rate-ticks"><span>ゆっくり</span><span>ふつう</span><span>はやい</span></div>
+    </div>
+
+    <div class="field rate-field">
+      <label class="field-label" for="pitchInput">声の高さ</label>
+      <div class="rate-track-row">
+        <input type="range" id="pitchInput" min="0.5" max="1.5" step="0.05" value="1">
+        <span class="rate-value" id="pitchValue">1.00</span>
+      </div>
+      <div class="rate-ticks"><span>低い</span><span>ふつう</span><span>高い</span></div>
+    </div>
+
+    <div class="field rate-field">
+      <label class="field-label" for="volumeInput">音量</label>
+      <div class="rate-track-row">
+        <input type="range" id="volumeInput" min="0" max="1" step="0.05" value="1">
+        <span class="rate-value" id="volumeValue">100%</span>
+      </div>
+      <div class="rate-ticks"><span>小さい</span><span>ふつう</span><span>大きい</span></div>
+    </div>
+
+    <div class="vu">
+      <canvas class="vu-canvas" id="vuCanvas" width="64" height="26"></canvas>
+      <span class="vu-status" id="vuStatus">待機中</span>
+    </div>
+  </div>
+  </div>
+  <!-- ==== guidedSection ここまで（誘導瞑想＝音読台） ==== -->
+
+  <!-- ==== timerSection（タイマー瞑想）====
+       既存の meditation_timer_single.html のロジックをこの単一ファイル内に統合したもの。
+       終了音は音読台と同じ endSoundSelect / playEndSound() を共用する。 -->
+  <div id="timerSection" hidden>
+    <div id="timerSelection" class="timer-panel">
+      <span class="manuscript-label">時間を選ぶ</span>
+      <p class="timer-instruction">瞑想する時間を選んでください</p>
+      <div class="timer-minute-grid">
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="3">3分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="5">5分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="7">7分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="10">10分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="15">15分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="20">20分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="30">30分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="45">45分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="60">60分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="90">90分</button>
+        <button type="button" class="preset-btn timer-minute-btn" data-minutes="120">120分</button>
+      </div>
+      <div class="timer-custom-row">
+        <label class="field-label" for="timerCustomMinutes">自由入力（分）</label>
+        <input type="number" id="timerCustomMinutes" min="1" max="600" step="1" placeholder="例：25">
+      </div>
+      <button type="button" class="play-btn-wide" id="timerStartBtn" disabled>開始</button>
+    </div>
+
+    <div id="timerRunning" class="timer-panel" hidden>
+      <div id="timerDisplay" class="timer-display">00:00</div>
+      <p class="timer-instruction">静かに呼吸を整えましょう</p>
+      <div class="timer-controls-row">
+        <button type="button" class="btn-outline" id="timerPauseBtn">一時停止</button>
+        <button type="button" class="btn-outline" id="timerResumeBtn" hidden>再開</button>
+        <button type="button" class="btn-outline danger" id="timerResetBtn">リセット</button>
+      </div>
+    </div>
+
+    <div id="timerFinished" class="timer-panel" hidden>
+      <p class="timer-instruction">終了しました</p>
+      <p class="timer-instruction">おつかれさまでした</p>
+      <div class="timer-controls-row">
+        <button type="button" class="play-btn-wide" id="timerAgainBtn">もう一度</button>
+        <button type="button" class="btn-outline" id="timerChooseBtn">時間を選び直す</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==== listSection（原稿一覧） ==== -->
+  <div id="listSection" hidden>
+    <div class="manuscript">
+      <span class="manuscript-label">原稿一覧</span>
+      <div id="scriptListContainer" class="script-list-container"></div>
+    </div>
+  </div>
+
+  <!-- ==== lecturerSection（講師モード＝テレプロンプター。TTSでは読み上げない） ==== -->
+  <div id="lecturerSection" hidden>
+    <div id="lecturerSetup" class="timer-panel">
+      <span class="manuscript-label">講師モードの準備</span>
+      <p class="timer-instruction">「誘導瞑想」タブに入力した原稿を、大きな文字で表示します。読み上げは行わず、自分のペースで「次へ」を押しながら進めます。</p>
+      <div class="timer-custom-row">
+        <label class="field-label" for="lecturerPlannedMinutes">予定時間（分）</label>
+        <input type="number" id="lecturerPlannedMinutes" min="1" max="600" step="1">
+      </div>
+      <button type="button" class="play-btn-wide" id="lecturerStartBtn">講師モードを開始</button>
+    </div>
+
+    <div id="lecturerRunning" class="lecturer-running" hidden>
+      <div class="lecturer-topbar">
+        <span id="lecturerSectionTitle" class="lecturer-section-title">（セクションなし）</span>
+        <div class="lecturer-time-group">
+          <span id="lecturerElapsed" class="lecturer-time">経過 0:00</span>
+          <span id="lecturerPlanned" class="lecturer-time">予定 0:00</span>
+          <span id="lecturerDiff" class="lecturer-diff">±0:00</span>
+        </div>
+      </div>
+
+      <div class="lecturer-stage">
+        <p id="lecturerCurrentText" class="lecturer-current"></p>
+        <p id="lecturerNextText" class="lecturer-next"></p>
+      </div>
+
+      <div id="lecturerNoteLabel" class="instructor-note lecturer-note" hidden></div>
+
+      <div class="lecturer-controls">
+        <button type="button" class="btn-outline" id="lecturerPrevBtn">← 前へ</button>
+        <button type="button" class="play-btn-wide" id="lecturerNextBtn">次へ →</button>
+        <button type="button" class="btn-outline danger" id="lecturerEndBtn">終了</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!--
+  睡眠モードの暗転オーバーレイ。
+  「睡眠」プリセットで再生を始めてしばらく経つと、これが画面全面に表示される。
+  誤操作防止のため、終了ボタンは1回押しただけでは終了せず、確認行を出してから「はい」を押す必要がある。
+-->
+<div id="sleepOverlay" class="sleep-overlay">
+  <div class="sleep-breath" aria-hidden="true"></div>
+  <p class="sleep-label">眠りのための読み上げ</p>
+  <p class="sleep-hint">画面をタップすると操作が出ます</p>
+  <div id="sleepControls" class="sleep-controls">
+    <div class="sleep-controls-row">
+      <button type="button" class="sleep-btn" id="sleepPlayPauseBtn">一時停止</button>
+      <button type="button" class="sleep-btn danger" id="sleepEndBtn">終了</button>
+    </div>
+    <span class="sleep-volume-label" id="sleepVolumeLabel">音量 40%</span>
+    <div id="sleepEndConfirmRow" class="sleep-end-confirm" hidden>
+      <span>終了しますか？</span>
+      <div class="sleep-end-confirm-row">
+        <button type="button" class="sleep-btn danger" id="sleepEndYes">はい、終了する</button>
+        <button type="button" class="sleep-btn" id="sleepEndNo">いいえ</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==== 動作ロジック（JavaScript） ==== -->
+<script>
+(function(){
+  var textInput = document.getElementById('textInput');
+  var readingView = document.getElementById('readingView');
+  var charCountEl = document.getElementById('charCount');
+  var estTimeEl = document.getElementById('estTime');
+  var sectionNavRow = document.getElementById('sectionNavRow');
+  var instructorNoteLabel = document.getElementById('instructorNoteLabel');
+  var playBtn = document.getElementById('playBtn');
+  var playIcon = document.getElementById('playIcon');
+  var stopBtn = document.getElementById('stopBtn');
+  var voiceSelect = document.getElementById('voiceSelect');
+  var endSoundSelect = document.getElementById('endSoundSelect');
+  var rateInput = document.getElementById('rateInput');
+  var rateValue = document.getElementById('rateValue');
+  var pitchInput = document.getElementById('pitchInput');
+  var pitchValue = document.getElementById('pitchValue');
+  var volumeInput = document.getElementById('volumeInput');
+  var volumeValue = document.getElementById('volumeValue');
+  var vuStatus = document.getElementById('vuStatus');
+  var vuCanvas = document.getElementById('vuCanvas');
+  var vuCtx = vuCanvas.getContext('2d');
+  var unsupportedNotice = document.getElementById('unsupportedNotice');
+  var voiceErrorNotice = document.getElementById('voiceErrorNotice');
+  var dimToggle = document.getElementById('dimToggle');
+  var sleepOverlay = document.getElementById('sleepOverlay');
+  var sleepPlayPauseBtn = document.getElementById('sleepPlayPauseBtn');
+  var sleepEndBtn = document.getElementById('sleepEndBtn');
+  var sleepVolumeLabel = document.getElementById('sleepVolumeLabel');
+  var sleepEndConfirmRow = document.getElementById('sleepEndConfirmRow');
+  var sleepEndYes = document.getElementById('sleepEndYes');
+  var sleepEndNo = document.getElementById('sleepEndNo');
+
+  var ICON_PLAY = '<path d="M6 4L16 10L6 16V4Z" fill="currentColor"/>';
+  var ICON_PAUSE = '<rect x="4" y="3" width="4" height="14" rx="1" fill="currentColor"/><rect x="12" y="3" width="4" height="14" rx="1" fill="currentColor"/>';
+
+  var supported = 'speechSynthesis' in window;
+  if (!supported) {
+    unsupportedNotice.classList.add('is-visible');
+    playBtn.disabled = true;
+    voiceSelect.disabled = true;
+    rateInput.disabled = true;
+  }
+
+  // ==== 状態管理 ====
+  // playState: idle(未再生) / speaking(読み上げ中) / waiting(「間」で待機中) / finished(最後まで再生完了)
+  // isPaused はユーザーが一時停止ボタンを押した状態（waiting中でもspeaking中でも押せる）
+  var commands = [];        // parseScriptの結果: {type:'speak',text} | {type:'pause',seconds}
+  var sentenceSpans = {};   // commandsのindex(speakのみ) -> readingView内のspan要素
+  var cmdIndex = 0;
+  var isPlaying = false;
+  var isPaused = false;
+  var playState = 'idle';
+  var pauseTimerId = null;   // 「間」の待機に使うsetTimeoutのID
+  var pauseRemainingMs = 0;  // 「間」の残り待機時間（一時停止中も保持する）
+  var pauseStartedAt = 0;    // 直近で待機を開始/再開した時刻
+  var pendingRateDelta = 0;   // 【ゆっくり】などの講師メモが、次の一文だけ速さに与える増減
+  var pendingVolumeDelta = 0; // 【少し声を落とす】などの講師メモが、次の一文だけ音量に与える増減
+  var voices = [];
+
+  function splitSentences(text) {
+    var parts = text.split(/(?<=[。！？!?\n])/);
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p.trim().length > 0) out.push(p);
+    }
+    return out;
+  }
+
+  // ==== 専門用語辞書（読み仮名の自動変換） ====
+  // 登録した用語は、原稿にそのまま書いても読み上げ時だけ自動的に読み仮名に置き換わる。
+  // 画面表示は常に元の表記（漢字）のまま。パーサーより前で初期化しておく必要がある
+  // （parseScriptの中からこの辞書を参照するため）。
+  var DEFAULT_DICTIONARY = {
+    '周天法': 'しゅうてんほう',
+    '小周天': 'しょうしゅうてん',
+    '大周天': 'だいしゅうてん',
+    '丹田': 'たんでん',
+    '任脈': 'にんみゃく',
+    '督脈': 'とくみゃく',
+    '火候': 'かこう',
+    '泥丸': 'でいがん'
+  };
+
+  function loadDictionary() {
+    try {
+      var raw = localStorage.getItem('ondokudai:dictionary');
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return Object.assign({}, DEFAULT_DICTIONARY);
+  }
+  function saveDictionary(dict) {
+    try { localStorage.setItem('ondokudai:dictionary', JSON.stringify(dict)); } catch (e) {}
+  }
+
+  var termDictionary = loadDictionary();
+
+  // 原稿内の「丹田{たんでん}」のような個別ルビ指定を、画面表示用と読み上げ用に分ける。
+  // 漢字部分は連続する漢字（CJK統合漢字＋々）のみを対象にし、直前のひらがな等を巻き込まない。
+  var RUBY_PATTERN = /([一-龠々]+)\{([^{}]+)\}/g;
+  function parseRuby(text) {
+    return {
+      display: text.replace(RUBY_PATTERN, '$1'),
+      speech: text.replace(RUBY_PATTERN, '$2')
+    };
+  }
+
+  // 辞書に登録済みの用語を読み上げテキストの中から探し、読みに置き換える。
+  // 長い用語を先に置き換えることで、短い用語が部分一致で誤爆するのを防ぐ。
+  function applyDictionaryToSpeech(text, dict) {
+    var terms = Object.keys(dict).filter(function (t) { return t; });
+    terms.sort(function (a, b) { return b.length - a.length; });
+    var result = text;
+    terms.forEach(function (term) {
+      result = result.split(term).join(dict[term]);
+    });
+    return result;
+  }
+
+  // ==== スクリプトパーサー（[間：N秒] ＋ ## セクション見出し ＋ 【講師メモ】 対応） ====
+  // 「[間：5秒]」はpauseコマンドに、「## 見出し」はsectionコマンドに、
+  // 「【...】」は講師メモとして下のclassifyInstructorNote()が仕分けたコマンドに変換する。
+  // どれも読み上げず、(?:...)|(?:...)|(?:...) の3つの候補を1回のスキャンで拾う。
+  var COMMAND_PATTERN = /\[間\s*[:：]?\s*(\d+(?:\.\d+)?)\s*秒\]|^##[ \t]*(.+)$|【([^】]+)】/gm;
+
+  // 講師メモの中身を見て、実際の挙動に振り分ける（指示書21節の対応表）。
+  // ・「一呼吸置く」          → 2秒のpauseそのもの
+  // ・「ゆっくり」            → 次の一文だけ読み上げ速度を落とす
+  // ・「少し声を落とす」      → 次の一文だけ音量を落とす
+  // ・それ以外（例：「ここで受講生を見る」）→ 音声は変えず、画面表示だけの講師メモにする
+  var INSTRUCTOR_NOTE_RULES = {
+    '一呼吸置く': { type: 'pause', seconds: 2 },
+    'ゆっくり': { type: 'rate-note', rateDelta: -0.15 },
+    '少し声を落とす': { type: 'volume-note', volumeDelta: -0.2 }
+  };
+
+  function classifyInstructorNote(rawText) {
+    var text = rawText.trim();
+    var rule = INSTRUCTOR_NOTE_RULES[text];
+    if (rule && rule.type === 'pause') {
+      // labelは再生エンジンでは使わないが、講師モードの下部表示のために残しておく
+      return { type: 'pause', seconds: rule.seconds, label: text };
+    }
+    if (rule && rule.type === 'rate-note') {
+      return { type: 'rate-note', label: text, rateDelta: rule.rateDelta };
+    }
+    if (rule && rule.type === 'volume-note') {
+      return { type: 'volume-note', label: text, volumeDelta: rule.volumeDelta };
+    }
+    return { type: 'note', label: text };
+  }
+
+  function parseScript(text) {
+    var result = [];
+    var lastIndex = 0;
+    var match;
+
+    function pushSpeakChunk(chunk) {
+      var pieces = splitSentences(chunk);
+      for (var i = 0; i < pieces.length; i++) {
+        var ruby = parseRuby(pieces[i]);
+        result.push({
+          type: 'speak',
+          text: ruby.display,                                        // 画面表示用（元の表記のまま）
+          speechText: applyDictionaryToSpeech(ruby.speech, termDictionary) // 読み上げ用（個別ルビ→辞書の順で適用）
+        });
+      }
+    }
+
+    COMMAND_PATTERN.lastIndex = 0;
+    while ((match = COMMAND_PATTERN.exec(text)) !== null) {
+      pushSpeakChunk(text.slice(lastIndex, match.index));
+      if (match[1] !== undefined) {
+        result.push({ type: 'pause', seconds: parseFloat(match[1]) });
+      } else if (match[2] !== undefined) {
+        result.push({ type: 'section', title: match[2].trim() });
+      } else if (match[3] !== undefined) {
+        result.push(classifyInstructorNote(match[3]));
+      }
+      lastIndex = COMMAND_PATTERN.lastIndex;
+    }
+    pushSpeakChunk(text.slice(lastIndex));
+
+    return result;
+  }
+
+  // commandsの中からsectionコマンドだけを抜き出し、{title, index}の一覧を作る。
+  // indexはそのセクションの先頭がcommandsの何番目かを表し、jumpToSection()に渡す。
+  function collectSections(cmds) {
+    var list = [];
+    cmds.forEach(function (cmd, idx) {
+      if (cmd.type === 'section') list.push({ title: cmd.title, index: idx });
+    });
+    return list;
+  }
+
+  // ==== セクション移動（## 見出しで区切られた講座内を任意の場所へ移動する） ====
+  var sectionList = [];        // [{title, index}] indexはcommands配列上の位置
+  var sectionNavButtons = [];  // [{btn, index}] ハイライト更新用
+  var currentSectionIndex = -1;
+
+  function refreshSectionNav() {
+    sectionList = collectSections(parseScript(textInput.value));
+    sectionNavRow.innerHTML = '';
+    sectionNavButtons = [];
+    if (!sectionList.length) {
+      sectionNavRow.hidden = true;
+      return;
+    }
+    sectionNavRow.hidden = false;
+    sectionList.forEach(function (sec) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'section-nav-btn';
+      btn.textContent = sec.title;
+      btn.addEventListener('click', function () { jumpToSection(sec.index); });
+      sectionNavRow.appendChild(btn);
+      sectionNavButtons.push({ btn: btn, index: sec.index });
+    });
+    highlightSectionNav(currentSectionIndex);
+  }
+
+  function highlightSectionNav(cmdIdx) {
+    sectionNavButtons.forEach(function (entry) {
+      entry.btn.classList.toggle('is-current', entry.index === cmdIdx);
+    });
+  }
+
+  // 指定したセクションの先頭から（再生中でも、止まっていても）再生を始める。
+  // startPlayback()自体がcancel/クリア/暗転解除などの後始末をすべてやってくれるのでそのまま呼ぶ。
+  function jumpToSection(idx) {
+    startPlayback(idx);
+  }
+
+  function updateMeta() {
+    var text = textInput.value;
+    var count = text.replace(/\s/g, '').length;
+    charCountEl.textContent = count + ' 文字';
+    var rate = parseFloat(rateInput.value);
+    var seconds = Math.round((count * 0.16) / rate);
+    var m = Math.floor(seconds / 60);
+    var s = seconds % 60;
+    estTimeEl.textContent = '推定 ' + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  textInput.addEventListener('input', function () {
+    updateMeta();
+    refreshSectionNav();
+  });
+  updateMeta();
+  refreshSectionNav();
+
+  rateInput.addEventListener('input', function () {
+    rateValue.textContent = parseFloat(rateInput.value).toFixed(1) + '×';
+    updateMeta();
+    saveSettings();
+  });
+
+  pitchInput.addEventListener('input', function () {
+    pitchValue.textContent = parseFloat(pitchInput.value).toFixed(2);
+    saveSettings();
+  });
+
+  volumeInput.addEventListener('input', function () {
+    volumeValue.textContent = Math.round(parseFloat(volumeInput.value) * 100) + '%';
+    saveSettings();
+  });
+
+  // ==== プリセット（速さ・声の高さ・音量のまとめ切り替え） ====
+  var PRESETS = {
+    normal:  { rate: 1.0,  pitch: 1.0,  volume: 1.0 }, // 通常音読
+    lecture: { rate: 0.93, pitch: 1.0,  volume: 0.8 }, // 講座
+    wish:    { rate: 0.82, pitch: 0.95, volume: 0.6 }, // 願望実現
+    sleep:   { rate: 0.70, pitch: 0.90, volume: 0.4 }  // 睡眠
+  };
+  var presetButtons = document.querySelectorAll('.preset-btn');
+  var activePresetKey = null; // 現在選ばれているプリセット。睡眠モード判定に使う
+
+  function setSelectedPreset(key) {
+    activePresetKey = key || null;
+    presetButtons.forEach(function (btn) {
+      btn.classList.toggle('is-selected', btn.dataset.preset === key);
+    });
+    try { localStorage.setItem('ondokudai:preset', key || ''); } catch (e) {}
+  }
+
+  function applyPreset(key) {
+    var preset = PRESETS[key];
+    if (!preset) return;
+    rateInput.value = preset.rate;
+    rateValue.textContent = preset.rate.toFixed(1) + '×';
+    pitchInput.value = preset.pitch;
+    pitchValue.textContent = preset.pitch.toFixed(2);
+    volumeInput.value = preset.volume;
+    volumeValue.textContent = Math.round(preset.volume * 100) + '%';
+    updateMeta();
+    saveSettings();
+    setSelectedPreset(key);
+  }
+
+  presetButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      applyPreset(btn.dataset.preset);
+    });
+  });
+
+  // スライダーを手動で動かしたら、プリセットのハイライトは外す
+  // （プリセット由来の値からずれるため、選択中の見た目のままにしない）
+  [rateInput, pitchInput, volumeInput].forEach(function (input) {
+    input.addEventListener('input', function () { setSelectedPreset(null); });
+  });
+
+  // ==== 睡眠モード（画面暗転・誤操作防止） ====
+  // 「睡眠」プリセットで再生を始めてから既定の秒数が経つと、画面をほぼ黒に暗転させる。
+  // 暗転中にタップすると一時的に最小限の操作（一時停止・終了・音量表示）だけが出て、
+  // 数秒操作がなければまた暗転する。誤って眠りを妨げないよう、終了は2段階確認にしてある。
+  var SLEEP_DIM_DELAY_MS = 15000;     // 暗転までの待ち時間（指示書の目安「10〜20秒」の中間）
+  var SLEEP_CONTROLS_HIDE_MS = 6000;  // 操作を表示したままにする時間
+  var sleepDimTimerId = null;
+  var sleepControlsHideTimerId = null;
+
+  function clearSleepTimers() {
+    if (sleepDimTimerId !== null) { clearTimeout(sleepDimTimerId); sleepDimTimerId = null; }
+    if (sleepControlsHideTimerId !== null) { clearTimeout(sleepControlsHideTimerId); sleepControlsHideTimerId = null; }
+  }
+
+  function scheduleSleepDim() {
+    clearSleepTimers();
+    if (activePresetKey !== 'sleep' || !dimToggle.checked) return;
+    sleepDimTimerId = setTimeout(function () {
+      if (isPlaying) enterSleepOverlay();
+    }, SLEEP_DIM_DELAY_MS);
+  }
+
+  function enterSleepOverlay() {
+    sleepOverlay.classList.add('is-active');
+    sleepOverlay.classList.remove('is-controls-visible');
+    sleepEndConfirmRow.hidden = true;
+  }
+
+  function exitSleepOverlay() {
+    clearSleepTimers();
+    sleepOverlay.classList.remove('is-active', 'is-controls-visible');
+    sleepEndConfirmRow.hidden = true;
+  }
+
+  function updateSleepControlsUI() {
+    sleepPlayPauseBtn.textContent = isPaused ? '再開' : '一時停止';
+    sleepVolumeLabel.textContent = '音量 ' + Math.round(parseFloat(volumeInput.value) * 100) + '%';
+  }
+
+  function showSleepControls() {
+    if (!sleepOverlay.classList.contains('is-active')) return;
+    sleepOverlay.classList.add('is-controls-visible');
+    updateSleepControlsUI();
+    if (sleepControlsHideTimerId !== null) clearTimeout(sleepControlsHideTimerId);
+    sleepControlsHideTimerId = setTimeout(function () {
+      sleepOverlay.classList.remove('is-controls-visible');
+      sleepEndConfirmRow.hidden = true;
+    }, SLEEP_CONTROLS_HIDE_MS);
+  }
+
+  sleepOverlay.addEventListener('click', function () {
+    showSleepControls();
+  });
+
+  sleepPlayPauseBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    togglePauseResume();
+    showSleepControls();
+  });
+
+  sleepEndBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    sleepEndConfirmRow.hidden = false;
+    showSleepControls();
+  });
+
+  sleepEndYes.addEventListener('click', function (e) {
+    e.stopPropagation();
+    stopPlayback('idle');
+  });
+
+  sleepEndNo.addEventListener('click', function (e) {
+    e.stopPropagation();
+    sleepEndConfirmRow.hidden = true;
+    showSleepControls();
+  });
+
+  (function restoreDimToggle() {
+    try {
+      var v = localStorage.getItem('ondokudai:dimEnabled');
+      dimToggle.checked = v === null ? true : v === '1';
+    } catch (e) { dimToggle.checked = true; }
+  })();
+  dimToggle.addEventListener('change', function () {
+    try { localStorage.setItem('ondokudai:dimEnabled', dimToggle.checked ? '1' : '0'); } catch (e) {}
+  });
+
+  // ---------- voices ----------
+  function populateVoices() {
+    voices = supported ? window.speechSynthesis.getVoices() : [];
+    if (!voices.length) return;
+
+    var jaVoices = voices.filter(function (v) { return v.lang && v.lang.toLowerCase().indexOf('ja') === 0; });
+    var otherVoices = voices.filter(function (v) { return jaVoices.indexOf(v) === -1; });
+
+    voiceSelect.innerHTML = '';
+    if (jaVoices.length) {
+      var jaGroup = document.createElement('optgroup');
+      jaGroup.label = '日本語';
+      jaVoices.forEach(function (v, i) {
+        var opt = document.createElement('option');
+        opt.value = v.name;
+        opt.textContent = v.name + (v.localService ? '' : '（ネットワーク）');
+        jaGroup.appendChild(opt);
+      });
+      voiceSelect.appendChild(jaGroup);
+    }
+    if (otherVoices.length) {
+      var otherGroup = document.createElement('optgroup');
+      otherGroup.label = 'その他の言語';
+      otherVoices.forEach(function (v) {
+        var opt = document.createElement('option');
+        opt.value = v.name;
+        opt.textContent = v.name + ' (' + v.lang + ')';
+        otherGroup.appendChild(opt);
+      });
+      voiceSelect.appendChild(otherGroup);
+    }
+
+    var saved = loadSettings();
+    if (saved && saved.voiceName && voices.some(function (v) { return v.name === saved.voiceName; })) {
+      voiceSelect.value = saved.voiceName;
+    }
+  }
+
+  if (supported) {
+    populateVoices();
+    window.speechSynthesis.onvoiceschanged = populateVoices;
+  }
+
+  function getSelectedVoice() {
+    var name = voiceSelect.value;
+    return voices.find(function (v) { return v.name === name; }) || null;
+  }
+
+  // ---------- settings persistence ----------
+  function saveSettings() {
+    try {
+      localStorage.setItem('ondokudai:settings', JSON.stringify({
+        voiceName: voiceSelect.value,
+        rate: rateInput.value,
+        pitch: pitchInput.value,
+        volume: volumeInput.value,
+        endSound: endSoundSelect.value
+      }));
+    } catch (e) {}
+  }
+  function loadSettings() {
+    try {
+      var raw = localStorage.getItem('ondokudai:settings');
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  (function restoreVoiceParams() {
+    var saved = loadSettings();
+    if (!saved) return;
+    if (saved.rate) {
+      rateInput.value = saved.rate;
+      rateValue.textContent = parseFloat(saved.rate).toFixed(1) + '×';
+    }
+    if (saved.pitch) {
+      pitchInput.value = saved.pitch;
+      pitchValue.textContent = parseFloat(saved.pitch).toFixed(2);
+    }
+    if (saved.volume !== undefined && saved.volume !== null) {
+      volumeInput.value = saved.volume;
+      volumeValue.textContent = Math.round(parseFloat(saved.volume) * 100) + '%';
+    }
+    if (saved.endSound) {
+      endSoundSelect.value = saved.endSound;
+    }
+  })();
+  endSoundSelect.addEventListener('change', saveSettings);
+  (function restorePresetSelection() {
+    try {
+      var key = localStorage.getItem('ondokudai:preset');
+      if (key) setSelectedPreset(key);
+    } catch (e) {}
+  })();
+  voiceSelect.addEventListener('change', saveSettings);
+
+  // ---------- reading view ----------
+  // pauseコマンドには対応するspanを作らない（読み上げないので画面上に表示する文字がない）。
+  function buildReadingView() {
+    readingView.innerHTML = '';
+    sentenceSpans = {};
+    commands.forEach(function (cmd, idx) {
+      if (cmd.type !== 'speak') return;
+      var span = document.createElement('span');
+      span.className = 'sentence';
+      span.dataset.index = idx;
+      span.textContent = cmd.text;
+      readingView.appendChild(span);
+      sentenceSpans[idx] = span;
+    });
+  }
+
+  function highlightCommand(idx) {
+    Object.keys(sentenceSpans).forEach(function (key) {
+      sentenceSpans[key].classList.toggle('is-current', Number(key) === idx);
+    });
+    var current = sentenceSpans[idx];
+    if (current && current.scrollIntoView) {
+      current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  // ---------- VU meter ----------
+  var vuFrame = null;
+  var vuPhase = 0;
+  function drawVU() {
+    var w = vuCanvas.width, h = vuCanvas.height;
+    vuCtx.clearRect(0, 0, w, h);
+    var bars = 9;
+    var barW = 3;
+    var gap = (w - bars * barW) / (bars - 1);
+    var accent = getComputedStyle(document.body).getPropertyValue('--accent-2').trim() || '#C98A2E';
+    var speaking = playState === 'speaking';
+    for (var i = 0; i < bars; i++) {
+      var amp;
+      if (speaking) {
+        amp = 0.25 + 0.75 * Math.abs(Math.sin(vuPhase * 0.18 + i * 0.9)) * (0.5 + 0.5 * Math.random());
+      } else {
+        amp = 0.08;
+      }
+      var barH = Math.max(2, amp * h);
+      vuCtx.fillStyle = accent;
+      vuCtx.globalAlpha = speaking ? 1 : 0.35;
+      vuCtx.fillRect(i * (barW + gap), h - barH, barW, barH);
+    }
+    vuCtx.globalAlpha = 1;
+
+    // 「間」の待機中は残り秒数をカウントダウン表示する（新しいsetIntervalを作らず、既存の描画ループに相乗り）
+    if (playState === 'waiting' && isPlaying && !isPaused) {
+      var remainingSec = Math.max(0, Math.ceil((pauseRemainingMs - (Date.now() - pauseStartedAt)) / 1000));
+      vuStatus.textContent = '間 残り' + remainingSec + '秒';
+    }
+
+    vuPhase++;
+    vuFrame = requestAnimationFrame(drawVU);
+  }
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduceMotion) {
+    drawVU();
+  } else {
+    vuCtx.fillStyle = '#C98A2E';
+    vuCtx.fillRect(0, 20, 64, 6);
+  }
+
+  // ==== 終了音 ====
+  // 原稿を最後まで読み終えたときだけ鳴らす。音声ファイルは使わず、瞑想タイマーと同じ
+  // Web Audio API でその場合成する。睡眠モードでは、選択に関わらず必ず無音にする。
+  var END_SOUND_PRESETS = {
+    beep:        { freq: 660, duration: 1.0, peak: 0.9 },
+    bell:        { freq: 220, duration: 2.4, peak: 0.7 },
+    'soft-bell': { freq: 880, duration: 1.6, peak: 0.4 }
+  };
+
+  // suppressForSleep: 誘導瞑想（音読台）側から呼ぶときだけtrueにする。
+  // 「睡眠プリセット中は終了音を完全に切る」のは誘導瞑想の話であり、
+  // タイマー瞑想はプリセットと無関係な別機能なのでこの抑制はかけない。
+  function playEndSound(suppressForSleep) {
+    if (suppressForSleep && activePresetKey === 'sleep') return; // 睡眠モードの終了音は完全に切る（STEP10）
+    var type = endSoundSelect.value;
+    var settings = END_SOUND_PRESETS[type];
+    if (!settings) return; // 'none' など未定義の場合は何もしない
+
+    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    var ctx = new AudioContextClass();
+    var oscillator = ctx.createOscillator();
+    var gain = ctx.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = settings.freq;
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start();
+    gain.gain.setValueAtTime(settings.peak, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + settings.duration);
+    oscillator.stop(ctx.currentTime + settings.duration);
+  }
+
+  // ==== 再生エンジン ====
+  function setPlayingUI(playing) {
+    isPlaying = playing;
+    playIcon.innerHTML = playing && !isPaused ? ICON_PAUSE : ICON_PLAY;
+    playBtn.setAttribute('aria-label', playing && !isPaused ? '一時停止' : '再生');
+    stopBtn.disabled = !playing;
+    textInput.style.display = playing ? 'none' : 'block';
+    readingView.classList.toggle('is-active', playing);
+    vuStatus.textContent = !playing ? '待機中' : (isPaused ? '一時停止' : '読み上げ中');
+  }
+
+  // 講師メモを画面に表示する。消すのは、対象の一文を読み終えたとき（onend/onerror）か、
+  // 音声を伴わない一般メモの場合は次のコマンドが始まる前まで（stopPlaybackで最終的に必ず消える）。
+  function showInstructorNote(label) {
+    instructorNoteLabel.textContent = '💬 ' + label;
+    instructorNoteLabel.hidden = false;
+  }
+  function clearInstructorNote() {
+    instructorNoteLabel.hidden = true;
+    instructorNoteLabel.textContent = '';
+  }
+
+  // 端末側の事情（音声が使えない、ネットワーク音声にオフラインで届かない等）で
+  // 読み上げに失敗したときの案内。しばらくしたら自動的に消える。
+  var voiceErrorHideTimerId = null;
+  function showVoiceErrorNotice() {
+    voiceErrorNotice.hidden = false;
+    if (voiceErrorHideTimerId !== null) clearTimeout(voiceErrorHideTimerId);
+    voiceErrorHideTimerId = setTimeout(function () { voiceErrorNotice.hidden = true; }, 6000);
+  }
+
+  function clearPauseTimer() {
+    if (pauseTimerId !== null) {
+      clearTimeout(pauseTimerId);
+      pauseTimerId = null;
+    }
+  }
+
+  // commands[idx] を実行する。speakなら読み上げ、pauseなら指定秒数だけ待ってから次へ進む。
+  function runCommand(idx) {
+    if (idx >= commands.length) {
+      persistPlaybackPosition(0); // 最後まで読み終えたので、次回は最初からにする
+      stopPlayback('finished');
+      return;
+    }
+    cmdIndex = idx;
+    persistPlaybackPosition(idx); // 保存済み原稿なら、今どこまで進んだかを都度書き出す
+    var cmd = commands[idx];
+
+    if (cmd.type === 'section') {
+      currentSectionIndex = idx;
+      highlightSectionNav(idx);
+      runCommand(idx + 1); // セクション区切り自体は読み上げず、間も置かずに次へ進む
+      return;
+    }
+
+    if (cmd.type === 'note' || cmd.type === 'rate-note' || cmd.type === 'volume-note') {
+      showInstructorNote(cmd.label); // 講師メモは読み上げず、画面表示だけにする
+      if (cmd.type === 'rate-note') pendingRateDelta = cmd.rateDelta;
+      if (cmd.type === 'volume-note') pendingVolumeDelta = cmd.volumeDelta;
+      runCommand(idx + 1);
+      return;
+    }
+
+    if (cmd.type === 'pause') {
+      playState = 'waiting';
+      pauseRemainingMs = cmd.seconds * 1000;
+      pauseStartedAt = Date.now();
+      pauseTimerId = setTimeout(function () {
+        if (isPlaying && !isPaused) runCommand(idx + 1);
+      }, pauseRemainingMs);
+      return;
+    }
+
+    playState = 'speaking';
+    highlightCommand(idx);
+    // 画面には cmd.text（元の表記）を出したまま、実際に読み上げるのは
+    // ルビ・辞書適用済みの cmd.speechText（未指定なら cmd.text にフォールバック）
+    var utter = new SpeechSynthesisUtterance(cmd.speechText || cmd.text);
+    var voice = getSelectedVoice();
+    if (voice) {
+      utter.voice = voice;
+      utter.lang = voice.lang;
+    } else {
+      utter.lang = 'ja-JP';
+    }
+    // 直前に【ゆっくり】【少し声を落とす】などの講師メモがあれば、この一文だけ速さ・音量を変える
+    utter.rate = Math.max(0.3, Math.min(2, parseFloat(rateInput.value) + pendingRateDelta));
+    utter.pitch = parseFloat(pitchInput.value);
+    utter.volume = Math.max(0, Math.min(1, parseFloat(volumeInput.value) + pendingVolumeDelta));
+    utter.onend = function () {
+      pendingRateDelta = 0;
+      pendingVolumeDelta = 0;
+      clearInstructorNote();
+      if (isPlaying && !isPaused) runCommand(idx + 1);
+    };
+    utter.onerror = function () {
+      pendingRateDelta = 0;
+      pendingVolumeDelta = 0;
+      clearInstructorNote();
+      showVoiceErrorNotice(); // この端末では現在この音声を利用できません、と案内する（STEP19）
+      if (isPlaying && !isPaused) runCommand(idx + 1);
+    };
+    window.speechSynthesis.speak(utter);
+  }
+
+  function startPlayback(startIndex) {
+    var text = textInput.value;
+    commands = parseScript(text);
+    if (!commands.length) return;
+    buildReadingView();
+    window.speechSynthesis.cancel();
+    clearPauseTimer();
+    exitSleepOverlay();
+    clearInstructorNote();
+    pendingRateDelta = 0;
+    pendingVolumeDelta = 0;
+    isPaused = false;
+    setPlayingUI(true);
+    runCommand(startIndex || 0);
+    scheduleSleepDim();
+  }
+
+  function togglePauseResume() {
+    if (isPaused) {
+      isPaused = false;
+      if (playState === 'waiting') {
+        // 「間」の途中で止めていた場合は、残り時間だけ再度待ってから次へ進む
+        pauseStartedAt = Date.now();
+        pauseTimerId = setTimeout(function () {
+          if (isPlaying && !isPaused) runCommand(cmdIndex + 1);
+        }, pauseRemainingMs);
+      } else {
+        window.speechSynthesis.resume();
+      }
+      setPlayingUI(true);
+      playIcon.innerHTML = ICON_PAUSE;
+    } else {
+      isPaused = true;
+      if (playState === 'waiting') {
+        // 経過した分だけ残り時間を減らして覚えておく
+        clearPauseTimer();
+        pauseRemainingMs = Math.max(0, pauseRemainingMs - (Date.now() - pauseStartedAt));
+      } else {
+        window.speechSynthesis.pause();
+      }
+      playIcon.innerHTML = ICON_PLAY;
+      vuStatus.textContent = '一時停止';
+    }
+  }
+
+  function stopPlayback(reason) {
+    window.speechSynthesis.cancel();
+    clearPauseTimer();
+    exitSleepOverlay();
+    clearInstructorNote();
+    pendingRateDelta = 0;
+    pendingVolumeDelta = 0;
+    isPaused = false;
+    var finished = reason === 'finished';
+    playState = finished ? 'finished' : 'idle';
+    if (finished) playEndSound(true);
+    setPlayingUI(false);
+    Object.keys(sentenceSpans).forEach(function (key) {
+      sentenceSpans[key].classList.remove('is-current');
+    });
+    currentSectionIndex = -1;
+    highlightSectionNav(-1);
+  }
+
+  // 保存済み原稿に続きの位置があれば確認してから再生を始める。
+  // 通常の再生ボタンからも、原稿一覧の「再生」からも、この同じ入り口を使う。
+  function beginPlaybackWithResumeCheck() {
+    var startIndex = 0;
+    if (pendingResumeIndex > 0) {
+      var resume = window.confirm('前回の続きから再生しますか？\nOK：続きから　／　キャンセル：最初から');
+      if (resume) startIndex = pendingResumeIndex;
+      pendingResumeIndex = 0; // 一度聞いたら消す。次に閉じたときの位置はまた別途保存される
+    }
+    startPlayback(startIndex);
+  }
+
+  playBtn.addEventListener('click', function () {
+    if (!supported) return;
+    if (!isPlaying) {
+      beginPlaybackWithResumeCheck();
+    } else {
+      togglePauseResume();
+    }
+  });
+
+  stopBtn.addEventListener('click', function () {
+    if (!supported) return;
+    stopPlayback('idle');
+  });
+
+  window.addEventListener('beforeunload', function () {
+    if (supported) window.speechSynthesis.cancel();
+  });
+
+  // ==== 原稿の保存・呼び出し ====
+  // localStorageに複数の原稿をタイトル・カテゴリ付きで保存する。
+  // 一覧をカテゴリごとに整理した専用画面はSTEP13で作る予定なので、
+  // ここではセレクトボックスからの保存/呼び出し/削除だけを最小限用意する。
+  var scriptTitleInput = document.getElementById('scriptTitleInput');
+  var scriptCategorySelect = document.getElementById('scriptCategorySelect');
+  var scriptNewBtn = document.getElementById('scriptNewBtn');
+  var scriptSaveBtn = document.getElementById('scriptSaveBtn');
+  var savedScriptSelect = document.getElementById('savedScriptSelect');
+  var scriptLoadBtn = document.getElementById('scriptLoadBtn');
+  var scriptDeleteBtn = document.getElementById('scriptDeleteBtn');
+  var scriptStatus = document.getElementById('scriptStatus');
+
+  var SCRIPT_CATEGORY_ORDER = ['睡眠誘導', '仙道瞑想', '願望実現', '周天法講座', '講義練習', '自作'];
+  var currentScriptId = null;  // 呼び出し中/保存済みの原稿ID（次の「保存」で上書きするか新規にするかの判定に使う）
+  var pendingResumeIndex = 0;  // 原稿を読み込んだ直後、次に再生ボタンを押したときに続きから始めるかどうかの判定に使う
+
+  function genScriptId() {
+    return 'scr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function loadScripts() {
+    try {
+      var raw = localStorage.getItem('ondokudai:scripts');
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveScripts(list) {
+    try { localStorage.setItem('ondokudai:scripts', JSON.stringify(list)); } catch (e) {}
+  }
+
+  function setScriptStatus(text) {
+    scriptStatus.textContent = text;
+  }
+
+  function refreshSavedScriptSelect() {
+    var list = loadScripts();
+    savedScriptSelect.innerHTML = '';
+    if (!list.length) {
+      var emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = '（まだ保存された原稿はありません）';
+      savedScriptSelect.appendChild(emptyOpt);
+      return;
+    }
+    SCRIPT_CATEGORY_ORDER.forEach(function (cat) {
+      var itemsInCat = list.filter(function (s) { return s.category === cat; });
+      if (!itemsInCat.length) return;
+      var group = document.createElement('optgroup');
+      group.label = cat;
+      itemsInCat.forEach(function (s) {
+        var opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.title;
+        group.appendChild(opt);
+      });
+      savedScriptSelect.appendChild(group);
+    });
+    if (currentScriptId) savedScriptSelect.value = currentScriptId;
+  }
+
+  scriptNewBtn.addEventListener('click', function () {
+    currentScriptId = null;
+    pendingResumeIndex = 0;
+    scriptTitleInput.value = '';
+    setScriptStatus('新しい原稿として保存できます。');
+  });
+
+  scriptSaveBtn.addEventListener('click', function () {
+    var title = scriptTitleInput.value.trim();
+    if (!title) {
+      setScriptStatus('タイトルを入力してください。');
+      return;
+    }
+    var list = loadScripts();
+    var now = new Date().toISOString();
+    var record = {
+      id: currentScriptId || genScriptId(),
+      title: title,
+      text: textInput.value,
+      category: scriptCategorySelect.value,
+      mode: activePresetKey,
+      rate: parseFloat(rateInput.value),
+      voiceName: voiceSelect.value,
+      pitch: parseFloat(pitchInput.value),
+      volume: parseFloat(volumeInput.value),
+      lastPosition: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    var existingIndex = list.findIndex(function (s) { return s.id === record.id; });
+    if (existingIndex !== -1) {
+      record.createdAt = list[existingIndex].createdAt;       // 作成日時は保持
+      record.lastPosition = list[existingIndex].lastPosition || 0; // 再生位置も保持（STEP14で本格利用）
+      list[existingIndex] = record;
+    } else {
+      list.push(record);
+    }
+    saveScripts(list);
+    currentScriptId = record.id;
+    refreshSavedScriptSelect();
+    setScriptStatus('「' + title + '」を保存しました。');
+  });
+
+  // 保存済みの1件を、原稿欄・速さ・声などの各コントロールへまとめて反映する。
+  // 「呼び出す」ボタンからも、原稿一覧の「編集」「再生」からも、この同じ処理を使う。
+  function applyScriptRecord(record) {
+    textInput.value = record.text;
+    updateMeta();
+    refreshSectionNav();
+
+    rateInput.value = record.rate;
+    rateValue.textContent = parseFloat(record.rate).toFixed(1) + '×';
+    pitchInput.value = record.pitch;
+    pitchValue.textContent = parseFloat(record.pitch).toFixed(2);
+    volumeInput.value = record.volume;
+    volumeValue.textContent = Math.round(parseFloat(record.volume) * 100) + '%';
+    if (record.voiceName && voices.some(function (v) { return v.name === record.voiceName; })) {
+      voiceSelect.value = record.voiceName;
+    }
+    setSelectedPreset(record.mode || null);
+
+    scriptTitleInput.value = record.title;
+    scriptCategorySelect.value = record.category;
+    currentScriptId = record.id;
+    pendingResumeIndex = record.lastPosition || 0; // 続きから再生できるように、保存済みの位置を覚えておく
+
+    saveSettings();
+  }
+
+  // 再生中、今どこまで進んだか（commandsのindex）を保存済み原稿に都度書き出す。
+  // 講座のように長い原稿を途中で閉じても、次回同じ場所から再生できるようにするため（STEP14）。
+  function persistPlaybackPosition(idx) {
+    if (!currentScriptId) return;
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === currentScriptId; });
+    if (!record) return;
+    record.lastPosition = idx;
+    record.updatedAt = new Date().toISOString();
+    saveScripts(list);
+  }
+
+  // 確認ダイアログ込みの削除本体。「保存した原稿」パネルからも原稿一覧からも使う。
+  function deleteScriptById(id) {
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === id; });
+    if (!record) return false;
+    if (!window.confirm('「' + record.title + '」を削除しますか？この操作は取り消せません。')) return false;
+    list = list.filter(function (s) { return s.id !== id; });
+    saveScripts(list);
+    if (currentScriptId === id) {
+      currentScriptId = null;
+      scriptTitleInput.value = '';
+    }
+    setScriptStatus('削除しました。');
+    return true;
+  }
+
+  scriptLoadBtn.addEventListener('click', function () {
+    var id = savedScriptSelect.value;
+    if (!id) return;
+    var record = loadScripts().find(function (s) { return s.id === id; });
+    if (!record) return;
+    applyScriptRecord(record);
+    setScriptStatus('「' + record.title + '」を呼び出しました。');
+  });
+
+  scriptDeleteBtn.addEventListener('click', function () {
+    var id = savedScriptSelect.value;
+    if (!id) return;
+    if (deleteScriptById(id)) refreshSavedScriptSelect();
+  });
+
+  refreshSavedScriptSelect();
+
+  // ==== 原稿一覧（カテゴリごとに整理し、各原稿に 再生/編集/コピー/削除 を用意する） ====
+  var listSection = document.getElementById('listSection');
+  var scriptListContainer = document.getElementById('scriptListContainer');
+
+  function estimateScriptDuration(text, rate) {
+    var count = text.replace(/\s/g, '').length;
+    var seconds = Math.round((count * 0.16) / (rate || 1));
+    var m = Math.floor(seconds / 60);
+    var s = seconds % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function renderScriptList() {
+    var list = loadScripts();
+    scriptListContainer.innerHTML = '';
+    if (!list.length) {
+      var empty = document.createElement('p');
+      empty.className = 'script-list-empty';
+      empty.textContent = 'まだ保存された原稿はありません。「誘導瞑想」タブで原稿を書いて保存してください。';
+      scriptListContainer.appendChild(empty);
+      return;
+    }
+    SCRIPT_CATEGORY_ORDER.forEach(function (cat) {
+      var itemsInCat = list.filter(function (s) { return s.category === cat; });
+      if (!itemsInCat.length) return;
+
+      var group = document.createElement('div');
+      group.className = 'script-list-group';
+      var heading = document.createElement('p');
+      heading.className = 'script-list-group-title';
+      heading.textContent = cat;
+      group.appendChild(heading);
+
+      itemsInCat.forEach(function (record) {
+        var row = document.createElement('div');
+        row.className = 'script-list-row';
+
+        var info = document.createElement('div');
+        info.className = 'script-list-info';
+        var titleEl = document.createElement('div');
+        titleEl.className = 'script-list-title';
+        titleEl.textContent = record.title;
+        var metaEl = document.createElement('div');
+        metaEl.className = 'script-list-meta';
+        metaEl.textContent = estimateScriptDuration(record.text, record.rate) +
+          (record.lastPosition > 0 ? '　・続きあり' : '');
+        info.appendChild(titleEl);
+        info.appendChild(metaEl);
+
+        var actions = document.createElement('div');
+        actions.className = 'script-list-actions';
+
+        var playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'primary';
+        playBtn.textContent = '再生';
+        playBtn.addEventListener('click', function () { playScriptFromList(record.id); });
+
+        var editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = '編集';
+        editBtn.addEventListener('click', function () { editScriptFromList(record.id); });
+
+        var copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.textContent = 'コピー';
+        copyBtn.addEventListener('click', function () { copyScriptFromList(record.id); });
+
+        var deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'danger';
+        deleteBtn.textContent = '削除';
+        deleteBtn.addEventListener('click', function () { deleteScriptFromList(record.id); });
+
+        actions.appendChild(playBtn);
+        actions.appendChild(editBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(deleteBtn);
+
+        row.appendChild(info);
+        row.appendChild(actions);
+        group.appendChild(row);
+      });
+
+      scriptListContainer.appendChild(group);
+    });
+  }
+
+  function editScriptFromList(id) {
+    var record = loadScripts().find(function (s) { return s.id === id; });
+    if (!record) return;
+    applyScriptRecord(record);
+    refreshSavedScriptSelect();
+    switchTab('guided');
+    setScriptStatus('「' + record.title + '」を呼び出しました。');
+  }
+
+  function playScriptFromList(id) {
+    var record = loadScripts().find(function (s) { return s.id === id; });
+    if (!record) return;
+    applyScriptRecord(record);
+    refreshSavedScriptSelect();
+    switchTab('guided');
+    beginPlaybackWithResumeCheck();
+  }
+
+  function copyScriptFromList(id) {
+    var list = loadScripts();
+    var record = list.find(function (s) { return s.id === id; });
+    if (!record) return;
+    var now = new Date().toISOString();
+    var copy = {
+      id: genScriptId(),
+      title: record.title + '（コピー）',
+      text: record.text,
+      category: record.category,
+      mode: record.mode,
+      rate: record.rate,
+      voiceName: record.voiceName,
+      pitch: record.pitch,
+      volume: record.volume,
+      lastPosition: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    list.push(copy);
+    saveScripts(list);
+    renderScriptList();
+    refreshSavedScriptSelect();
+    setScriptStatus('「' + record.title + '」をコピーしました。');
+  }
+
+  function deleteScriptFromList(id) {
+    if (deleteScriptById(id)) {
+      renderScriptList();
+      refreshSavedScriptSelect();
+    }
+  }
+
+  // ==== タブ切り替え（誘導瞑想 / タイマー瞑想） ====
+  var guidedSection = document.getElementById('guidedSection');
+  var timerSection = document.getElementById('timerSection');
+  var lecturerSection = document.getElementById('lecturerSection');
+  var tabButtons = document.querySelectorAll('.tab-btn');
+
+  function switchTab(tab) {
+    var currentTab = document.querySelector('.tab-btn.is-selected');
+    currentTab = currentTab ? currentTab.dataset.tab : 'guided';
+    if (tab === currentTab) return; // 同じタブを選び直しただけなら何もしない（再生中のものを誤って止めない）
+
+    if (isPlaying) stopPlayback('idle'); // 誘導瞑想が再生中なら、タブを離れる前に止める
+    timerPause();                        // タイマーが動作中なら、タブを離れる前に一時停止にする
+    if (lecturerTimerId) { clearInterval(lecturerTimerId); lecturerTimerId = null; } // 講師モードの時計は裏で回さない
+
+    guidedSection.hidden = tab !== 'guided';
+    timerSection.hidden = tab !== 'timer';
+    listSection.hidden = tab !== 'list';
+    lecturerSection.hidden = tab !== 'lecturer';
+    if (tab === 'list') renderScriptList();
+    if (tab === 'lecturer' && lecturerStartTime && lecturerRunning.hidden === false) {
+      lecturerTimerId = setInterval(updateLecturerTimeDisplay, 1000);
+      updateLecturerTimeDisplay();
+    }
+
+    tabButtons.forEach(function (btn) {
+      var selected = btn.dataset.tab === tab;
+      btn.classList.toggle('is-selected', selected);
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+  }
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () { switchTab(btn.dataset.tab); });
+  });
+
+  // ==== タイマー瞑想（meditation_timer_single.html をこのファイルに統合） ====
+  var timerSelection = document.getElementById('timerSelection');
+  var timerRunning = document.getElementById('timerRunning');
+  var timerFinished = document.getElementById('timerFinished');
+  var timerMinuteButtons = document.querySelectorAll('.timer-minute-btn');
+  var timerCustomMinutes = document.getElementById('timerCustomMinutes');
+  var timerStartBtn = document.getElementById('timerStartBtn');
+  var timerPauseBtn = document.getElementById('timerPauseBtn');
+  var timerResumeBtn = document.getElementById('timerResumeBtn');
+  var timerResetBtn = document.getElementById('timerResetBtn');
+  var timerAgainBtn = document.getElementById('timerAgainBtn');
+  var timerChooseBtn = document.getElementById('timerChooseBtn');
+  var timerDisplay = document.getElementById('timerDisplay');
+
+  var timerSelectedMinutes = null;
+  var timerIntervalId = null;
+  var timerRemainingSeconds = 0;
+
+  timerMinuteButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      timerSelectedMinutes = parseInt(btn.dataset.minutes, 10);
+      timerMinuteButtons.forEach(function (b) { b.classList.toggle('is-selected', b === btn); });
+      timerCustomMinutes.value = '';
+      timerStartBtn.disabled = false;
+    });
+  });
+
+  timerCustomMinutes.addEventListener('input', function () {
+    var v = parseInt(timerCustomMinutes.value, 10);
+    if (v > 0) {
+      timerSelectedMinutes = v;
+      timerMinuteButtons.forEach(function (btn) { btn.classList.remove('is-selected'); });
+      timerStartBtn.disabled = false;
+    } else {
+      timerSelectedMinutes = null;
+      timerStartBtn.disabled = true;
+    }
+  });
+
+  function timerUpdateDisplay() {
+    var hours = Math.floor(timerRemainingSeconds / 3600);
+    var minutes = Math.floor((timerRemainingSeconds % 3600) / 60);
+    var seconds = timerRemainingSeconds % 60;
+    var mm = String(minutes).padStart(2, '0');
+    var ss = String(seconds).padStart(2, '0');
+    timerDisplay.textContent = hours > 0 ? (hours + ':' + mm + ':' + ss) : (mm + ':' + ss);
+  }
+
+  function timerCountdownTick() {
+    timerRemainingSeconds--;
+    timerUpdateDisplay();
+    if (timerRemainingSeconds <= 0) {
+      clearInterval(timerIntervalId);
+      timerIntervalId = null;
+      timerFinishCountdown();
+    }
+  }
+
+  function timerStartCountdown() {
+    clearInterval(timerIntervalId);
+    timerIntervalId = setInterval(timerCountdownTick, 1000);
+  }
+
+  function timerFinishCountdown() {
+    playEndSound(false); // タイマー瞑想は誘導瞑想の「睡眠プリセット」とは無関係なので常に設定通り鳴らす
+    timerRunning.hidden = true;
+    timerFinished.hidden = false;
+  }
+
+  function timerPause() {
+    if (!timerIntervalId) return;
+    clearInterval(timerIntervalId);
+    timerIntervalId = null;
+    timerPauseBtn.hidden = true;
+    timerResumeBtn.hidden = false;
+  }
+
+  timerStartBtn.addEventListener('click', function () {
+    if (!timerSelectedMinutes) return;
+    timerRemainingSeconds = timerSelectedMinutes * 60;
+    timerSelection.hidden = true;
+    timerRunning.hidden = false;
+    timerPauseBtn.hidden = false;
+    timerResumeBtn.hidden = true;
+    timerUpdateDisplay();
+    timerStartCountdown();
+  });
+
+  timerPauseBtn.addEventListener('click', timerPause);
+
+  timerResumeBtn.addEventListener('click', function () {
+    timerStartCountdown();
+    timerResumeBtn.hidden = true;
+    timerPauseBtn.hidden = false;
+  });
+
+  timerResetBtn.addEventListener('click', function () {
+    clearInterval(timerIntervalId);
+    timerIntervalId = null;
+    timerRunning.hidden = true;
+    timerSelection.hidden = false;
+    timerMinuteButtons.forEach(function (btn) { btn.classList.remove('is-selected'); });
+    timerCustomMinutes.value = '';
+    timerSelectedMinutes = null;
+    timerStartBtn.disabled = true;
+    timerPauseBtn.hidden = false;
+    timerResumeBtn.hidden = true;
+  });
+
+  timerAgainBtn.addEventListener('click', function () {
+    timerFinished.hidden = true;
+    timerRunning.hidden = false;
+    timerRemainingSeconds = timerSelectedMinutes * 60;
+    timerUpdateDisplay();
+    timerPauseBtn.hidden = false;
+    timerResumeBtn.hidden = true;
+    timerStartCountdown();
+  });
+
+  timerChooseBtn.addEventListener('click', function () {
+    timerFinished.hidden = true;
+    timerSelection.hidden = false;
+    timerMinuteButtons.forEach(function (btn) { btn.classList.remove('is-selected'); });
+    timerCustomMinutes.value = '';
+    timerSelectedMinutes = null;
+    timerStartBtn.disabled = true;
+  });
+
+  window.addEventListener('beforeunload', function () {
+    clearInterval(timerIntervalId);
+  });
+
+  // ==== 講師モード（テレプロンプター。TTSでは読み上げない） ====
+  var lecturerSetup = document.getElementById('lecturerSetup');
+  var lecturerRunning = document.getElementById('lecturerRunning');
+  var lecturerPlannedMinutes = document.getElementById('lecturerPlannedMinutes');
+  var lecturerStartBtn = document.getElementById('lecturerStartBtn');
+  var lecturerSectionTitleEl = document.getElementById('lecturerSectionTitle');
+  var lecturerElapsedEl = document.getElementById('lecturerElapsed');
+  var lecturerPlannedEl = document.getElementById('lecturerPlanned');
+  var lecturerDiffEl = document.getElementById('lecturerDiff');
+  var lecturerCurrentTextEl = document.getElementById('lecturerCurrentText');
+  var lecturerNextTextEl = document.getElementById('lecturerNextText');
+  var lecturerNoteLabelEl = document.getElementById('lecturerNoteLabel');
+  var lecturerPrevBtn = document.getElementById('lecturerPrevBtn');
+  var lecturerNextBtn = document.getElementById('lecturerNextBtn');
+  var lecturerEndBtn = document.getElementById('lecturerEndBtn');
+
+  var lecturerCommands = [];
+  var lecturerIndex = 0;
+  var lecturerStartTime = null;   // Date.now()。講師モード開始からの経過時間の基準
+  var lecturerTimerId = null;
+  var lecturerPlannedTotalSeconds = 0;
+
+  function estimateSecondsForText(text, rate) {
+    var count = text.replace(/\s/g, '').length;
+    return Math.round((count * 0.16) / (rate || 1));
+  }
+
+  function formatMMSS(totalSeconds) {
+    var s = Math.max(0, Math.round(totalSeconds));
+    var m = Math.floor(s / 60);
+    var ss = s % 60;
+    return m + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+
+  function findSpeakIndexFrom(cmds, fromIdx) {
+    for (var i = fromIdx; i < cmds.length; i++) {
+      if (cmds[i].type === 'speak') return i;
+    }
+    return -1;
+  }
+
+  function findSpeakIndexStep(cmds, fromIdx, direction) {
+    var i = fromIdx + direction;
+    while (i >= 0 && i < cmds.length) {
+      if (cmds[i].type === 'speak') return i;
+      i += direction;
+    }
+    return -1;
+  }
+
+  // 本文（speak）の文字数を基準に、「今の場所まで進んでいたら、予定時間のうち何秒経っているはずか」を求める。
+  // 節ごとの予定時刻までは管理していないので、原稿全体の予定時間を文字数で按分する簡易計算にしている。
+  function computeExpectedSecondsAtIndex(cmds, idx, totalPlannedSeconds) {
+    var totalChars = 0;
+    var charsUpToIdx = 0;
+    cmds.forEach(function (cmd, i) {
+      if (cmd.type !== 'speak') return;
+      totalChars += cmd.text.length;
+      if (i <= idx) charsUpToIdx += cmd.text.length;
+    });
+    if (totalChars === 0) return 0;
+    return totalPlannedSeconds * (charsUpToIdx / totalChars);
+  }
+
+  function updateLecturerTimeDisplay() {
+    if (!lecturerStartTime) return;
+    var elapsedSec = (Date.now() - lecturerStartTime) / 1000;
+    var expectedSec = computeExpectedSecondsAtIndex(lecturerCommands, lecturerIndex, lecturerPlannedTotalSeconds);
+    var diffSec = elapsedSec - expectedSec;
+    lecturerElapsedEl.textContent = '経過 ' + formatMMSS(elapsedSec);
+    lecturerPlannedEl.textContent = '予定 ' + formatMMSS(expectedSec);
+    lecturerDiffEl.textContent = (diffSec >= 0 ? '+' : '−') + formatMMSS(Math.abs(diffSec));
+    lecturerDiffEl.classList.toggle('is-behind', diffSec > 0);
+  }
+
+  function lecturerRender() {
+    if (!lecturerCommands.length) return;
+    // 0から現在地までたどり、直近のセクション名・講師メモを求める
+    var sectionTitle = '';
+    var noteLabel = '';
+    for (var i = 0; i <= lecturerIndex; i++) {
+      var c = lecturerCommands[i];
+      if (c.type === 'section') { sectionTitle = c.title; noteLabel = ''; }
+      else if (c.type === 'note' || c.type === 'rate-note' || c.type === 'volume-note') noteLabel = c.label;
+      else if (c.type === 'pause' && c.label) noteLabel = c.label;
+      else if (c.type === 'speak') noteLabel = '';
+    }
+    lecturerSectionTitleEl.textContent = sectionTitle || '（セクションなし）';
+    lecturerCurrentTextEl.textContent = lecturerCommands[lecturerIndex].text;
+
+    var nextIdx = findSpeakIndexStep(lecturerCommands, lecturerIndex, 1);
+    lecturerNextTextEl.textContent = nextIdx !== -1 ? lecturerCommands[nextIdx].text : '（最後です）';
+
+    if (noteLabel) {
+      lecturerNoteLabelEl.textContent = '💬 ' + noteLabel;
+      lecturerNoteLabelEl.hidden = false;
+    } else {
+      lecturerNoteLabelEl.hidden = true;
+    }
+
+    lecturerPrevBtn.disabled = findSpeakIndexStep(lecturerCommands, lecturerIndex, -1) === -1;
+    lecturerNextBtn.disabled = nextIdx === -1;
+    updateLecturerTimeDisplay();
+  }
+
+  function refreshLecturerPlannedPlaceholder() {
+    if (!lecturerSetup.hidden) {
+      var seconds = estimateSecondsForText(textInput.value, parseFloat(rateInput.value) || 1);
+      lecturerPlannedMinutes.value = Math.max(1, Math.round(seconds / 60));
+    }
+  }
+  refreshLecturerPlannedPlaceholder();
+  textInput.addEventListener('input', refreshLecturerPlannedPlaceholder);
+
+  lecturerStartBtn.addEventListener('click', function () {
+    lecturerCommands = parseScript(textInput.value);
+    var firstSpeak = findSpeakIndexFrom(lecturerCommands, 0);
+    if (firstSpeak === -1) return; // 読み上げる本文が原稿に1つもない
+    lecturerIndex = firstSpeak;
+    lecturerPlannedTotalSeconds = (parseFloat(lecturerPlannedMinutes.value) || 1) * 60;
+    lecturerStartTime = Date.now();
+    lecturerSetup.hidden = true;
+    lecturerRunning.hidden = false;
+    lecturerRender();
+    clearInterval(lecturerTimerId);
+    lecturerTimerId = setInterval(updateLecturerTimeDisplay, 1000);
+  });
+
+  lecturerNextBtn.addEventListener('click', function () {
+    var nextIdx = findSpeakIndexStep(lecturerCommands, lecturerIndex, 1);
+    if (nextIdx !== -1) { lecturerIndex = nextIdx; lecturerRender(); }
+  });
+
+  lecturerPrevBtn.addEventListener('click', function () {
+    var prevIdx = findSpeakIndexStep(lecturerCommands, lecturerIndex, -1);
+    if (prevIdx !== -1) { lecturerIndex = prevIdx; lecturerRender(); }
+  });
+
+  lecturerEndBtn.addEventListener('click', function () {
+    clearInterval(lecturerTimerId);
+    lecturerTimerId = null;
+    lecturerStartTime = null;
+    lecturerRunning.hidden = true;
+    lecturerSetup.hidden = false;
+  });
+
+  // ==== 専門用語辞書の編集UI（データ本体のtermDictionaryはパーサーより前で定義済み） ====
+  var dictList = document.getElementById('dictList');
+  var dictTermInput = document.getElementById('dictTermInput');
+  var dictReadingInput = document.getElementById('dictReadingInput');
+  var dictAddBtn = document.getElementById('dictAddBtn');
+  var dictResetBtn = document.getElementById('dictResetBtn');
+
+  function renderDictList() {
+    dictList.innerHTML = '';
+    var terms = Object.keys(termDictionary);
+    if (!terms.length) {
+      var empty = document.createElement('p');
+      empty.className = 'script-list-empty';
+      empty.textContent = '登録された用語はありません。';
+      dictList.appendChild(empty);
+      return;
+    }
+    terms.forEach(function (term) {
+      var row = document.createElement('div');
+      row.className = 'dict-row';
+
+      var termEl = document.createElement('span');
+      termEl.className = 'dict-term';
+      termEl.textContent = term;
+
+      var readingEl = document.createElement('span');
+      readingEl.className = 'dict-reading';
+      readingEl.textContent = termDictionary[term];
+
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.textContent = '削除';
+      delBtn.addEventListener('click', function () {
+        delete termDictionary[term];
+        saveDictionary(termDictionary);
+        renderDictList();
+      });
+
+      row.appendChild(termEl);
+      row.appendChild(readingEl);
+      row.appendChild(delBtn);
+      dictList.appendChild(row);
+    });
+  }
+  renderDictList();
+
+  dictAddBtn.addEventListener('click', function () {
+    var term = dictTermInput.value.trim();
+    var reading = dictReadingInput.value.trim();
+    if (!term || !reading) return;
+    termDictionary[term] = reading;
+    saveDictionary(termDictionary);
+    dictTermInput.value = '';
+    dictReadingInput.value = '';
+    renderDictList();
+  });
+
+  dictResetBtn.addEventListener('click', function () {
+    if (!window.confirm('専門用語辞書を初期状態に戻しますか？追加・削除した内容は失われます。')) return;
+    termDictionary = Object.assign({}, DEFAULT_DICTIONARY);
+    saveDictionary(termDictionary);
+    renderDictList();
+  });
+})();
+
+// ==== PWA登録（オフラインでもアプリ本体を開けるようにする） ====
+// アプリのUIロジックとは無関係なので、上のIIFEの外に分けている。
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('service-worker.js').catch(function () {
+      // manifest.jsonをつけずにファイルを直接開いた場合など、登録できないことがあるが
+      // その場合もアプリ自体はオンライン中は通常どおり動く
+    });
+  });
+}
+</script>
+
+</body></html>
