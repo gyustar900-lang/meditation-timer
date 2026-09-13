@@ -954,6 +954,24 @@
       </select>
     </div>
 
+    <div class="field">
+      <label class="field-label" for="bgmSelect">BGM</label>
+      <select id="bgmSelect">
+        <option value="none" selected>なし</option>
+        <option value="white">ホワイトノイズ</option>
+        <option value="brown">ブラウンノイズ（低め）</option>
+      </select>
+    </div>
+
+    <div class="field rate-field">
+      <label class="field-label" for="bgmVolumeInput">BGM音量</label>
+      <div class="rate-track-row">
+        <input type="range" id="bgmVolumeInput" min="0" max="0.3" step="0.01" value="0.12">
+        <span class="rate-value" id="bgmVolumeValue">12%</span>
+      </div>
+      <div class="rate-ticks"><span>控えめ</span><span>ふつう</span><span>大きめ</span></div>
+    </div>
+
     <div class="field rate-field">
       <label class="field-label" for="rateInput">速さ</label>
       <div class="rate-track-row">
@@ -1121,6 +1139,9 @@
   var stopBtn = document.getElementById('stopBtn');
   var voiceSelect = document.getElementById('voiceSelect');
   var endSoundSelect = document.getElementById('endSoundSelect');
+  var bgmSelect = document.getElementById('bgmSelect');
+  var bgmVolumeInput = document.getElementById('bgmVolumeInput');
+  var bgmVolumeValue = document.getElementById('bgmVolumeValue');
   var rateInput = document.getElementById('rateInput');
   var rateValue = document.getElementById('rateValue');
   var pitchInput = document.getElementById('pitchInput');
@@ -1564,7 +1585,9 @@
         rate: rateInput.value,
         pitch: pitchInput.value,
         volume: volumeInput.value,
-        endSound: endSoundSelect.value
+        endSound: endSoundSelect.value,
+        bgm: bgmSelect.value,
+        bgmVolume: bgmVolumeInput.value
       }));
     } catch (e) {}
   }
@@ -1591,6 +1614,13 @@
     }
     if (saved.endSound) {
       endSoundSelect.value = saved.endSound;
+    }
+    if (saved.bgm) {
+      bgmSelect.value = saved.bgm;
+    }
+    if (saved.bgmVolume !== undefined && saved.bgmVolume !== null) {
+      bgmVolumeInput.value = saved.bgmVolume;
+      bgmVolumeValue.textContent = Math.round(parseFloat(saved.bgmVolume) * 100) + '%';
     }
   })();
   endSoundSelect.addEventListener('change', saveSettings);
@@ -1702,6 +1732,80 @@
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + settings.duration);
     oscillator.stop(ctx.currentTime + settings.duration);
   }
+
+  // ==== BGM（環境音） ====
+  // 指示書28節の順番どおり、外部の音声ファイルは使わず、その場で合成できる
+  // ホワイトノイズ／ブラウンノイズだけをまず用意する（雨・川などの録音音源は別途検討）。
+  // TTS本体はあくまで100%、BGMは指示書29節の目安(5〜20%程度)で控えめに鳴らす。
+  var bgmAudioCtx = null;
+  var bgmSourceNode = null;
+  var bgmGainNode = null;
+
+  function generateNoiseBuffer(ctx, type) {
+    var seconds = 4; // 4秒分をループ再生する
+    var bufferSize = ctx.sampleRate * seconds;
+    var buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    var data = buffer.getChannelData(0);
+    if (type === 'brown') {
+      var last = 0;
+      for (var i = 0; i < bufferSize; i++) {
+        var white = Math.random() * 2 - 1;
+        last = (last + 0.02 * white) / 1.02; // 高音域を減らして低めのノイズにする
+        data[i] = last * 3.5; // 音量を聞き取れる大きさまで補正
+      }
+    } else {
+      for (var j = 0; j < bufferSize; j++) {
+        data[j] = Math.random() * 2 - 1;
+      }
+    }
+    return buffer;
+  }
+
+  function stopBgm() {
+    if (bgmSourceNode) {
+      try { bgmSourceNode.stop(); } catch (e) {}
+      bgmSourceNode = null;
+    }
+    if (bgmAudioCtx) {
+      try { bgmAudioCtx.close(); } catch (e) {}
+      bgmAudioCtx = null;
+    }
+    bgmGainNode = null;
+  }
+
+  function startBgm() {
+    stopBgm();
+    var type = bgmSelect.value;
+    if (type === 'none') return;
+    var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    bgmAudioCtx = new AudioContextClass();
+    bgmSourceNode = bgmAudioCtx.createBufferSource();
+    bgmSourceNode.buffer = generateNoiseBuffer(bgmAudioCtx, type);
+    bgmSourceNode.loop = true;
+    bgmGainNode = bgmAudioCtx.createGain();
+    bgmGainNode.gain.value = parseFloat(bgmVolumeInput.value);
+    bgmSourceNode.connect(bgmGainNode);
+    bgmGainNode.connect(bgmAudioCtx.destination);
+    bgmSourceNode.start();
+  }
+
+  function pauseBgm() {
+    if (bgmAudioCtx && bgmAudioCtx.state === 'running') bgmAudioCtx.suspend();
+  }
+  function resumeBgm() {
+    if (bgmAudioCtx && bgmAudioCtx.state === 'suspended') bgmAudioCtx.resume();
+  }
+
+  bgmSelect.addEventListener('change', function () {
+    saveSettings();
+    if (isPlaying && !isPaused) startBgm(); // 再生中に選び直したら即座に切り替える
+  });
+  bgmVolumeInput.addEventListener('input', function () {
+    bgmVolumeValue.textContent = Math.round(parseFloat(bgmVolumeInput.value) * 100) + '%';
+    if (bgmGainNode) bgmGainNode.gain.value = parseFloat(bgmVolumeInput.value);
+    saveSettings();
+  });
 
   // ==== 再生エンジン ====
   function setPlayingUI(playing) {
@@ -1824,6 +1928,7 @@
     setPlayingUI(true);
     runCommand(startIndex || 0);
     scheduleSleepDim();
+    startBgm();
   }
 
   function togglePauseResume() {
@@ -1838,6 +1943,7 @@
       } else {
         window.speechSynthesis.resume();
       }
+      resumeBgm();
       setPlayingUI(true);
       playIcon.innerHTML = ICON_PAUSE;
     } else {
@@ -1849,6 +1955,7 @@
       } else {
         window.speechSynthesis.pause();
       }
+      pauseBgm();
       playIcon.innerHTML = ICON_PLAY;
       vuStatus.textContent = '一時停止';
     }
@@ -1859,6 +1966,7 @@
     clearPauseTimer();
     exitSleepOverlay();
     clearInstructorNote();
+    stopBgm();
     pendingRateDelta = 0;
     pendingVolumeDelta = 0;
     isPaused = false;
