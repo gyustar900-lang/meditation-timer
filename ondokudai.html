@@ -4800,13 +4800,32 @@
     }
   ];
 
+  // サンプル原稿は、1回きりのフラグではなく「id単位」で管理する。
+  // こうしておくと、アプリを更新してDEFAULT_SEED_SCRIPTSに原稿が増えたとき、
+  // 既に使っている端末にも足りない分だけ後から追加できる。
+  // 一方で、一度追加したidは「対応済み」として覚えておくので、
+  // ユーザーが削除した原稿が読み込むたびに復活する、ということも起きない。
   function seedDefaultScriptsIfNeeded() {
     try {
-      if (localStorage.getItem('ondokudai:seeded')) return; // この端末では実行済み
-      if (!loadScripts().length) {
-        saveScripts(DEFAULT_SEED_SCRIPTS.slice());
+      var existing = loadScripts();
+      var existingIds = existing.map(function (s) { return s.id; });
+
+      var seenRaw = localStorage.getItem('ondokudai:seededIds');
+      // 旧バージョン（1回きりフラグ方式）からの移行: 記録が無い場合、
+      // 今すでにある原稿のidは「対応済み」とみなして、重複追加を防ぐ。
+      var seenIds = seenRaw ? JSON.parse(seenRaw) : existingIds.slice();
+
+      var newOnes = DEFAULT_SEED_SCRIPTS.filter(function (seed) {
+        return seenIds.indexOf(seed.id) === -1 && existingIds.indexOf(seed.id) === -1;
+      });
+
+      if (newOnes.length) {
+        saveScripts(existing.concat(newOnes));
       }
-      localStorage.setItem('ondokudai:seeded', '1');
+
+      var allSeenIds = seenIds.concat(newOnes.map(function (s) { return s.id; }));
+      var uniqueSeenIds = allSeenIds.filter(function (id, idx) { return allSeenIds.indexOf(id) === idx; });
+      localStorage.setItem('ondokudai:seededIds', JSON.stringify(uniqueSeenIds));
     } catch (e) {}
   }
   seedDefaultScriptsIfNeeded();
